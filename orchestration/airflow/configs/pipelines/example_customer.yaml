@@ -1,41 +1,48 @@
 pipeline_id: example_customer_daily
-description: Reference pipeline showing all four stages wired via YAML.
+description: Reference pipeline showing every stage type wired via YAML.
 owner: data-platform
-schedule: "0 6 * * *"
-start_date: 2026-01-01T00:00:00
-catchup: false
 tags:
   - example
   - customer
 
+schedule:
+  cron: "0 6 * * *"
+  timezone: UTC
+  start_date: 2026-01-01T00:00:00
+  catchup: false
+  max_active_runs: 1
+  retries: 3
+  retry_delay_minutes: 5
+
 stages:
   ingestion:
     type: s3_csv
-    config:
-      source_bucket: customer-landing
-      source_key: daily/*.csv
-      dest_bucket: datafabrik-raw
-      dest_prefix: example_customer/{{ ds }}/
+    source_bucket: customer-landing
+    source_key: daily/*.csv
+    dest_bucket: datafabrik-raw
+    dest_prefix: example_customer/{{ ds }}/
 
   transformation:
     type: dbt
-    config:
-      project_dir: /usr/app/dbt
-      profiles_dir: /usr/app/dbt
-      select: example
-      target: dev
+    project_dir: /usr/app/dbt
+    profiles_dir: /usr/app/dbt
+    select: example
+    target: dev
 
   validation:
-    type: row_count
-    config:
+    - type: row_count
       connection_id: postgres_default
       table: analytics.example
       min_rows: 1
+    - type: freshness
+      connection_id: postgres_default
+      table: analytics.example
+      timestamp_column: updated_at
+      max_lag_minutes: 1440
 
   delivery:
     type: s3_publish
-    config:
-      source_bucket: datafabrik-curated
-      source_prefix: example_customer/{{ ds }}/
-      dest_bucket: customer-delivery
-      dest_prefix: example_customer/{{ ds }}/
+    source_bucket: datafabrik-curated
+    source_prefix: example_customer/{{ ds }}/
+    dest_bucket: customer-delivery
+    dest_prefix: example_customer/{{ ds }}/

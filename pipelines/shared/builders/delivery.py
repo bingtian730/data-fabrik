@@ -1,21 +1,26 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from airflow.operators.python import PythonOperator
 
 from pipelines.shared.registry import register
+from pipelines.shared.schema.destinations import (
+    S3PublishDestinationConfig,
+    SlackNotifyDestinationConfig,
+    WebhookDestinationConfig,
+)
 
 if TYPE_CHECKING:
     from airflow import DAG
     from airflow.models.baseoperator import BaseOperator
 
-    from pipelines.shared.config import PipelineConfig, StageConfig
+    from pipelines.shared.schema import PipelineConfig
 
 
-def _stub(label: str, **kwargs):
+def _stub(label: str, **fields: Any):
     def _run(**_):
-        print(f"[{label}] config={kwargs}")
+        print(f"[{label}] {fields}")
     return _run
 
 
@@ -23,21 +28,16 @@ def _stub(label: str, **kwargs):
 def s3_publish(
     *,
     stage: str,
-    stage_config: StageConfig,
+    stage_config: S3PublishDestinationConfig,
     pipeline: PipelineConfig,
     dag: DAG,
 ) -> BaseOperator:
-    """Copy curated data to a downstream-readable S3 location.
-
-    config:
-      source_bucket: str (default: datafabrik-curated)
-      source_prefix: str (required)
-      dest_bucket:   str (required)
-      dest_prefix:   str (required)
-    """
     return PythonOperator(
         task_id=stage,
-        python_callable=_stub(f"{pipeline.pipeline_id}.{stage}.s3_publish", **stage_config.config),
+        python_callable=_stub(
+            f"{pipeline.pipeline_id}.{stage}.s3_publish",
+            **stage_config.model_dump(),
+        ),
         dag=dag,
     )
 
@@ -46,20 +46,16 @@ def s3_publish(
 def slack_notify(
     *,
     stage: str,
-    stage_config: StageConfig,
+    stage_config: SlackNotifyDestinationConfig,
     pipeline: PipelineConfig,
     dag: DAG,
 ) -> BaseOperator:
-    """Post a completion message to a Slack channel.
-
-    config:
-      connection_id: str (default: slack_default)
-      channel:       str (required)
-      message:       str (required, supports Jinja)
-    """
     return PythonOperator(
         task_id=stage,
-        python_callable=_stub(f"{pipeline.pipeline_id}.{stage}.slack_notify", **stage_config.config),
+        python_callable=_stub(
+            f"{pipeline.pipeline_id}.{stage}.slack_notify",
+            **stage_config.model_dump(),
+        ),
         dag=dag,
     )
 
@@ -68,20 +64,15 @@ def slack_notify(
 def webhook(
     *,
     stage: str,
-    stage_config: StageConfig,
+    stage_config: WebhookDestinationConfig,
     pipeline: PipelineConfig,
     dag: DAG,
 ) -> BaseOperator:
-    """Call an HTTP webhook to notify a downstream system.
-
-    config:
-      url:     str (required)
-      method:  str (default: POST)
-      headers: dict (optional)
-      payload: dict (optional)
-    """
     return PythonOperator(
         task_id=stage,
-        python_callable=_stub(f"{pipeline.pipeline_id}.{stage}.webhook", **stage_config.config),
+        python_callable=_stub(
+            f"{pipeline.pipeline_id}.{stage}.webhook",
+            **stage_config.model_dump(),
+        ),
         dag=dag,
     )

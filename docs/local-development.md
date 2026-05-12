@@ -190,7 +190,8 @@ DataFabrik pipelines are config-driven. Adding a new customer pipeline is a YAML
 | `BasePipeline` (ABC)              | Four-stage template (ingestion → transformation → validation → delivery), handles DAG wiring |
 | `YamlPipeline`                    | Concrete subclass that resolves builders via the global registry                         |
 | Task-builder registry             | `@register("ingestion", "s3_csv")` decorator pattern                                     |
-| `PipelineConfig` / `StageConfig`  | Pydantic models that validate every YAML before it becomes a DAG                         |
+| Typed schema ([pipelines/shared/schema/](../pipelines/shared/schema/)) | Pydantic models with discriminated unions per stage type. `extra="forbid"` rejects unknown YAML keys. JSON Schema in [pipeline_config.schema.json](../pipelines/shared/schema/pipeline_config.schema.json). |
+| `ScheduleConfig`                  | Cron/preset, start_date, timezone, catchup, retries, max_active_runs — fed into the Airflow DAG |
 | `dynamic_pipelines.py` DAG file   | Iterates `configs/pipelines/*.yaml` and registers one DAG per file                       |
 
 ### Built-in task builders
@@ -241,7 +242,53 @@ docker compose exec airflow-scheduler python -c \
 
 # Run the pipeline-factory smoke test suite
 docker compose exec -T airflow-scheduler python < tests/test_pipeline_factory.py
+
+# Run the schema validation tests
+docker compose exec -T airflow-scheduler python < tests/test_pipeline_schema.py
+
+# Regenerate the JSON Schema file (after changing any pydantic model)
+docker compose exec -T airflow-scheduler python -m pipelines.shared.schema \
+  -o /opt/airflow/pipelines/shared/schema/pipeline_config.schema.json
 ```
+
+### Pipeline YAML structure
+
+```yaml
+pipeline_id: my_pipeline           # alphanumeric / _ / - only; also the DAG id
+description: Optional description
+owner: data-platform
+tags: [example]
+
+schedule:
+  cron: "0 6 * * *"                # or preset: "@daily" (exclusive)
+  timezone: UTC
+  start_date: 2026-01-01T00:00:00
+  catchup: false
+  max_active_runs: 1
+  retries: 3
+  retry_delay_minutes: 5
+
+stages:
+  ingestion:                       # required, single source
+    type: s3_csv                   # discriminator field; chooses the schema
+    source_bucket: ...
+    source_key: ...
+  transformation:                  # optional, single transform
+    type: dbt
+    select: example
+  validation:                      # optional, list of rules (run in parallel)
+    - type: row_count
+      connection_id: postgres_default
+      table: analytics.example
+      min_rows: 1
+    - type: freshness
+      ...
+  delivery:                        # optional, single destination
+    type: s3_publish
+    ...
+```
+
+Unknown fields are rejected by the schema, so typos fail fast at DAG parse time.
 
 ### Writing a custom task builder
 
