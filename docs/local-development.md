@@ -179,6 +179,88 @@ docker compose exec airflow-webserver airflow tasks list <dag_id>
 docker compose exec airflow-webserver airflow dags trigger <dag_id>
 ```
 
+## Dynamic Pipeline Factory
+
+DataFabrik pipelines are config-driven. Adding a new customer pipeline is a YAML file under [orchestration/airflow/configs/pipelines/](../orchestration/airflow/configs/pipelines/), not new Python. The Airflow scheduler picks it up automatically.
+
+### Anatomy
+
+| Component                         | Purpose                                                                                  |
+| --------------------------------- | ---------------------------------------------------------------------------------------- |
+| `BasePipeline` (ABC)              | Four-stage template (ingestion → transformation → validation → delivery), handles DAG wiring |
+| `YamlPipeline`                    | Concrete subclass that resolves builders via the global registry                         |
+| Task-builder registry             | `@register("ingestion", "s3_csv")` decorator pattern                                     |
+| `PipelineConfig` / `StageConfig`  | Pydantic models that validate every YAML before it becomes a DAG                         |
+| `dynamic_pipelines.py` DAG file   | Iterates `configs/pipelines/*.yaml` and registers one DAG per file                       |
+
+### Built-in task builders
+
+| Stage          | Available `type:` values                |
+| -------------- | --------------------------------------- |
+| ingestion      | `s3_csv`, `http_api`, `jdbc`            |
+| transformation | `dbt`, `sql`, `spark`                   |
+| validation     | `row_count`, `schema`, `freshness`      |
+| delivery       | `s3_publish`, `slack_notify`, `webhook` |
+
+All builders are currently print-stubs — real implementations come in follow-up tickets. See [pipelines/shared/builders/](../pipelines/shared/builders/) for their config contracts.
+
+### Adding a new pipeline
+
+```bash
+# 1. Drop a YAML in this directory
+cp orchestration/airflow/configs/pipelines/example_customer.yaml \
+   orchestration/airflow/configs/pipelines/acme_daily.yaml
+vim orchestration/airflow/configs/pipelines/acme_daily.yaml
+
+# 2. Wait ~30s for the scheduler to pick it up, then verify
+docker compose exec airflow-scheduler airflow dags list | grep acme
+```
+
+The schema is enforced by [PipelineConfig](../pipelines/shared/config.py); invalid YAML fails fast at DAG parse time with a clear error.
+
+### Pipeline commands
+
+```bash
+# List every DAG (built-in + YAML-driven)
+docker compose exec airflow-scheduler airflow dags list
+
+# Show task graph for one pipeline
+docker compose exec airflow-scheduler airflow tasks list example_customer_daily
+
+# Run end-to-end without scheduling (great for smoke-checking)
+docker compose exec airflow-scheduler \
+  airflow dags test example_customer_daily 2026-05-12
+
+# Trigger via the scheduled path
+docker compose exec airflow-scheduler \
+  airflow dags trigger example_customer_daily
+
+# See which task builders are registered
+docker compose exec airflow-scheduler python -c \
+  "from pipelines.shared import all_builders; print(sorted(all_builders().keys()))"
+
+# Run the pipeline-factory smoke test suite
+docker compose exec -T airflow-scheduler python < tests/test_pipeline_factory.py
+```
+
+### Writing a custom task builder
+
+Add a function under [pipelines/shared/builders/](../pipelines/shared/builders/) (or anywhere imported at startup) and decorate it:
+
+```python
+from airflow.operators.python import PythonOperator
+from pipelines.shared.registry import register
+
+@register("ingestion", "kafka")  # stage, type
+def kafka_ingest(*, stage, stage_config, pipeline, dag):
+    def _run(**_):
+        # real work goes here
+        pass
+    return PythonOperator(task_id=stage, python_callable=_run, dag=dag)
+```
+
+Any pipeline YAML can now use `type: kafka` for its ingestion stage.
+
 ## File layout
 
 ```
