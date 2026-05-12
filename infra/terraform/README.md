@@ -20,12 +20,33 @@ environments/
 
 ```bash
 cd environments/dev
-terraform init
-terraform plan
-terraform apply         # creates real AWS resources — see "Cost" below
+terraform init                          # download providers, link modules (run once)
+terraform plan -out=tfplan              # show what will change, save the plan
+terraform apply tfplan                  # apply exactly the saved plan (no surprises)
+terraform destroy                       # tear it all down when finished
 ```
 
+The `-out=tfplan` / `apply tfplan` two-step is the safer pattern: `apply` runs the exact plan you reviewed, not a fresh one computed at apply time.
+
 State is local by default (`terraform.tfstate` in the env directory, gitignored). Switch to an S3 backend by adding `backend.tf` once a state bucket exists.
+
+### Common commands
+
+```bash
+terraform fmt -recursive                # format all .tf files in place
+terraform validate                      # static-check the config (no AWS calls)
+terraform plan                          # show drift / pending changes
+terraform plan -out=tfplan              # save the plan to apply later
+terraform apply tfplan                  # apply a saved plan
+terraform apply -auto-approve           # skip the confirmation prompt (be careful)
+terraform destroy                       # delete every resource in state
+terraform output                        # print all outputs
+terraform output -raw vpc_id            # print one output, no quoting
+terraform state list                    # list managed resources
+terraform state show <addr>             # inspect one resource
+```
+
+Run all of these from `environments/dev/` (or another env directory).
 
 ## What gets created in dev
 
