@@ -1,0 +1,41 @@
+pipeline_id: example_customer_daily
+description: Reference pipeline showing all four stages wired via YAML.
+owner: data-platform
+schedule: "0 6 * * *"
+start_date: 2026-01-01T00:00:00
+catchup: false
+tags:
+  - example
+  - customer
+
+stages:
+  ingestion:
+    type: s3_csv
+    config:
+      source_bucket: customer-landing
+      source_key: daily/*.csv
+      dest_bucket: datafabrik-raw
+      dest_prefix: example_customer/{{ ds }}/
+
+  transformation:
+    type: dbt
+    config:
+      project_dir: /usr/app/dbt
+      profiles_dir: /usr/app/dbt
+      select: example
+      target: dev
+
+  validation:
+    type: row_count
+    config:
+      connection_id: postgres_default
+      table: analytics.example
+      min_rows: 1
+
+  delivery:
+    type: s3_publish
+    config:
+      source_bucket: datafabrik-curated
+      source_prefix: example_customer/{{ ds }}/
+      dest_bucket: customer-delivery
+      dest_prefix: example_customer/{{ ds }}/

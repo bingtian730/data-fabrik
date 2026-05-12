@@ -11,10 +11,12 @@ x-airflow-common: &airflow-common
     AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
     AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
     AWS_ENDPOINT_URL: http://minio:9000
+    PYTHONPATH: /opt/airflow
   volumes:
     - ./orchestration/airflow/dags:/opt/airflow/dags
     - ./orchestration/airflow/plugins:/opt/airflow/plugins
     - ./orchestration/airflow/configs:/opt/airflow/configs
+    - ./pipelines:/opt/airflow/pipelines
     - airflow-logs:/opt/airflow/logs
   user: "${AIRFLOW_UID:-50000}:0"
 
