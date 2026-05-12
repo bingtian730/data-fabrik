@@ -1,0 +1,20 @@
+name: datafabrik_models
+version: 0.1.0
+config-version: 2
+
+profile: datafabrik
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+analysis-paths: ["analyses"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+target-path: target
+clean-targets:
+  - target
+  - dbt_packages
+
+models:
+  datafabrik_models:
+    +materialized: view

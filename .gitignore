@@ -18,6 +18,7 @@ terraform.tfvars
 target/
 dbt_packages/
 logs/
+.user.yml
 
 # IDE
 .vscode/
