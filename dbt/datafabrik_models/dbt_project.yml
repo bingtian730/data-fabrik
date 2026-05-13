@@ -17,4 +17,4 @@ clean-targets:
 
 models:
   datafabrik_models:
-    +materialized: view
+    +materialized: table
