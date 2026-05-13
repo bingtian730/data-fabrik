@@ -17,16 +17,17 @@ Then open [Airflow](http://localhost:8080) (`admin` / `admin`) in your browser.
 
 ## Services
 
-| Service       | Local URL                          | Default credentials             | Container name                 |
-| ------------- | ---------------------------------- | ------------------------------- | ------------------------------ |
-| Airflow UI    | http://localhost:8080              | `admin` / `admin`               | `datafabrik-airflow-webserver` |
-| FastAPI docs  | http://localhost:8000/docs         | —                               | `datafabrik-fastapi`           |
-| FastAPI health| http://localhost:8000/health       | —                               | `datafabrik-fastapi`           |
-| MinIO console | http://localhost:9001              | `minioadmin` / `minioadmin`     | `datafabrik-minio`             |
-| MinIO S3 API  | http://localhost:9000              | same as console                 | `datafabrik-minio`             |
-| Presto UI     | http://localhost:8081              | —                               | `datafabrik-presto`            |
-| Postgres      | `localhost:5433`                   | `postgres` / `postgres`         | `datafabrik-postgres`          |
-| dbt           | (no exposed port — use `exec`)     | —                               | `datafabrik-dbt`               |
+| Service              | Local URL                          | Default credentials             | Container name                 |
+| -------------------- | ---------------------------------- | ------------------------------- | ------------------------------ |
+| Airflow UI           | http://localhost:8080              | `admin` / `admin`               | `datafabrik-airflow-webserver` |
+| Pipeline dashboard   | http://localhost:8000/dashboard    | —                               | `datafabrik-fastapi`           |
+| FastAPI docs         | http://localhost:8000/docs         | —                               | `datafabrik-fastapi`           |
+| FastAPI health       | http://localhost:8000/health       | —                               | `datafabrik-fastapi`           |
+| MinIO console        | http://localhost:9001              | `minioadmin` / `minioadmin`     | `datafabrik-minio`             |
+| MinIO S3 API         | http://localhost:9000              | same as console                 | `datafabrik-minio`             |
+| Presto UI            | http://localhost:8081              | —                               | `datafabrik-presto`            |
+| Postgres             | `localhost:5433`                   | `postgres` / `postgres`         | `datafabrik-postgres`          |
+| dbt                  | (no exposed port — use `exec`)     | —                               | `datafabrik-dbt`               |
 
 Postgres is on **5433** (not the default 5432) to avoid conflicting with a local Postgres install. Override with `POSTGRES_HOST_PORT` in `.env` if you need a different port.
 
@@ -82,9 +83,62 @@ A Hive catalog backed by MinIO is **not** configured yet — adding one requires
 ### FastAPI
 
 - Entrypoint: [`backend/app/main.py`](../backend/app/main.py)
-- Endpoints: `GET /` and `GET /health`
 - Hot reload is enabled — edits to files under `backend/` take effect immediately.
-- Pre-wired env: `DATABASE_URL`, `S3_ENDPOINT_URL`, `PRESTO_HOST`, `PRESTO_PORT`.
+- Pre-wired env: `DATABASE_URL`, `S3_ENDPOINT_URL`, `PRESTO_HOST`, `PRESTO_PORT`, `AIRFLOW_URL`.
+
+| Endpoint              | Description                                              |
+| --------------------- | -------------------------------------------------------- |
+| `GET /`               | Service info                                             |
+| `GET /health`         | Health check (used by Docker healthcheck)                |
+| `GET /dashboard`      | Pipeline health dashboard (HTML, auto-refreshes 30s)     |
+| `GET /api/pipelines`  | Pipeline health data as JSON                             |
+
+## Pipeline Health Dashboard
+
+Open **http://localhost:8000/dashboard** in your browser to see the health of all pipelines at a glance.
+
+The dashboard auto-refreshes every 30 seconds and combines two data sources:
+
+| Data source | What it provides |
+| --- | --- |
+| Airflow REST API | Current run state, last run time, duration |
+| `pipeline_metadata.ingestion_log` | Rows extracted, watermark (JDBC pipelines only) |
+
+### What each column shows
+
+| Column | Description |
+| --- | --- |
+| **Pipeline** | DAG id with a direct link to the Airflow grid view |
+| **State** | Most recent run: ✓ success (green), ✗ failed (red), ⏸ paused (yellow), ↻ running (blue) |
+| **Last Run (UTC)** | Start time of the most recent run |
+| **Duration** | Wall-clock time of the last run |
+| **30-day Success Rate** | Percentage of finished runs (success + failed) that succeeded over the past 30 days, with a colour-coded progress bar and raw count (e.g. `28/30 runs`) |
+| **Rows** | Rows extracted on the last JDBC ingestion run (`—` for non-JDBC pipelines) |
+| **Watermark** | Last high-water mark written to `pipeline_metadata.watermarks` (JDBC only) |
+
+### Success rate colour coding
+
+| Colour | Threshold | Meaning |
+| --- | --- | --- |
+| Green | ≥ 90% | Pipeline is healthy |
+| Yellow | 70–89% | Intermittent failures — worth investigating |
+| Red | < 70% | Pipeline is unreliable — investigate immediately |
+
+### CLI equivalent
+
+If you prefer the terminal, `./scripts/pipeline-status.sh` prints the same information as a colour-coded table with no browser required.
+
+```bash
+./scripts/pipeline-status.sh
+```
+
+### Raw JSON
+
+The underlying data is also available as JSON at `GET /api/pipelines` — useful for integrating with other tooling:
+
+```bash
+curl http://localhost:8000/api/pipelines | jq .
+```
 
 ## Common commands
 
@@ -115,6 +169,26 @@ docker compose exec <service> bash         # (some images have bash)
 ```
 
 Verifies Postgres, MinIO buckets, Airflow, Presto (TPC-H query), and FastAPI. Non-zero exit on any failure.
+
+### Developer scripts
+
+Four scripts in [`scripts/`](../scripts/) automate common pipeline tasks:
+
+| Script | What it does |
+| --- | --- |
+| `./scripts/new-pipeline.sh` | Interactive scaffold — prompts for source type, schedule, transform, delivery; writes the YAML config and dbt model stubs |
+| `./scripts/upload-data.sh <file> <bucket>/<prefix>/` | Upload a local file or directory to MinIO; auto-detects `aws-cli` or falls back to `mc` inside Docker |
+| `./scripts/run-pipeline.sh <pipeline_id>` | Trigger a DAG run, poll until done, print a per-task pass/fail table, exit 1 on failure |
+| `./scripts/pipeline-status.sh` | Print a colour-coded health summary of all pipelines (state, last run, duration, success rate) |
+
+Typical workflow for a new pipeline:
+
+```bash
+./scripts/upload-data.sh data/my_feed.csv customer-landing/my_feed/
+./scripts/new-pipeline.sh          # answer the prompts
+./scripts/run-pipeline.sh my_feed_daily
+./scripts/pipeline-status.sh      # confirm it's green
+```
 
 ### dbt
 
