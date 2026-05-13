@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from airflow.operators.python import PythonOperator
 
@@ -18,12 +18,6 @@ if TYPE_CHECKING:
     from pipelines.shared.schema import PipelineConfig
 
 
-def _stub(label: str, **fields: Any):
-    def _run(**_):
-        print(f"[{label}] {fields}")
-    return _run
-
-
 @register("validation", "row_count")
 def row_count(
     *,
@@ -32,14 +26,18 @@ def row_count(
     pipeline: PipelineConfig,
     dag: DAG,
 ) -> BaseOperator:
-    return PythonOperator(
-        task_id=stage,
-        python_callable=_stub(
-            f"{pipeline.pipeline_id}.validation.row_count",
-            **stage_config.model_dump(),
-        ),
-        dag=dag,
-    )
+    def _run(**_):
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+        hook = PostgresHook(postgres_conn_id=stage_config.connection_id)
+        count = hook.get_first(f"SELECT COUNT(*) FROM {stage_config.table}")[0]
+        print(f"[row_count] {stage_config.table}: {count} rows")
+        if count < stage_config.min_rows:
+            raise ValueError(f"{stage_config.table} has {count} rows, minimum is {stage_config.min_rows}")
+        if stage_config.max_rows is not None and count > stage_config.max_rows:
+            raise ValueError(f"{stage_config.table} has {count} rows, maximum is {stage_config.max_rows}")
+        print(f"[row_count] PASSED")
+
+    return PythonOperator(task_id=stage, python_callable=_run, dag=dag)
 
 
 @register("validation", "schema")
@@ -50,14 +48,25 @@ def schema(
     pipeline: PipelineConfig,
     dag: DAG,
 ) -> BaseOperator:
-    return PythonOperator(
-        task_id=stage,
-        python_callable=_stub(
-            f"{pipeline.pipeline_id}.validation.schema",
-            **stage_config.model_dump(),
-        ),
-        dag=dag,
-    )
+    def _run(**_):
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+        hook = PostgresHook(postgres_conn_id=stage_config.connection_id)
+        schema_name, table_name = (stage_config.table.split(".", 1) + [""])[:2]
+        rows = hook.get_records(
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = %s AND table_name = %s
+            ORDER BY ordinal_position
+            """,
+            parameters=(schema_name, table_name),
+        )
+        actual = [r[0] for r in rows]
+        expected = stage_config.expected_columns
+        if actual != expected:
+            raise ValueError(f"{stage_config.table} columns mismatch.\n  expected: {expected}\n  actual:   {actual}")
+        print(f"[schema] PASSED — {actual}")
+
+    return PythonOperator(task_id=stage, python_callable=_run, dag=dag)
 
 
 @register("validation", "freshness")
@@ -68,11 +77,20 @@ def freshness(
     pipeline: PipelineConfig,
     dag: DAG,
 ) -> BaseOperator:
-    return PythonOperator(
-        task_id=stage,
-        python_callable=_stub(
-            f"{pipeline.pipeline_id}.validation.freshness",
-            **stage_config.model_dump(),
-        ),
-        dag=dag,
-    )
+    def _run(**_):
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+        hook = PostgresHook(postgres_conn_id=stage_config.connection_id)
+        lag_minutes = hook.get_first(
+            f"""
+            SELECT EXTRACT(EPOCH FROM (NOW() - MAX({stage_config.timestamp_column}))) / 60
+            FROM {stage_config.table}
+            """
+        )[0]
+        print(f"[freshness] {stage_config.table}.{stage_config.timestamp_column}: lag = {lag_minutes:.1f} min")
+        if lag_minutes is None or lag_minutes > stage_config.max_lag_minutes:
+            raise ValueError(
+                f"{stage_config.table} freshness lag {lag_minutes:.1f} min exceeds max {stage_config.max_lag_minutes} min"
+            )
+        print(f"[freshness] PASSED")
+
+    return PythonOperator(task_id=stage, python_callable=_run, dag=dag)

@@ -18,6 +18,7 @@ x-airflow-common: &airflow-common
     - ./orchestration/airflow/configs:/opt/airflow/configs
     - ./pipelines:/opt/airflow/pipelines
     - airflow-logs:/opt/airflow/logs
+    - /var/run/docker.sock:/var/run/docker.sock
   user: "${AIRFLOW_UID:-50000}:0"
 
 services:
@@ -114,6 +115,7 @@ services:
   airflow-scheduler:
     <<: *airflow-common
     container_name: datafabrik-airflow-scheduler
+    user: "0:0"
     command: scheduler
     depends_on:
       postgres:

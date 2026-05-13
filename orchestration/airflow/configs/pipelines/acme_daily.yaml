@@ -36,7 +36,8 @@ stages:
       min_rows: 1
 
   delivery:
-    type: slack_notify
-    connection_id: slack_default
-    channel: "#data-alerts"
-    message: "acme_daily finished for {{ ds }} — acme_todos loaded successfully."
+    type: s3_publish
+    source_bucket: datafabrik-raw
+    source_prefix: acme/{{ ds }}/
+    dest_bucket: datafabrik-curated
+    dest_prefix: acme/{{ ds }}/
