@@ -34,11 +34,10 @@ stages:
       connection_id: postgres_default
       table: analytics.example
       min_rows: 1
-    - type: freshness
+    - type: row_count
       connection_id: postgres_default
       table: analytics.example
-      timestamp_column: updated_at
-      max_lag_minutes: 1440
+      min_rows: 1
 
   delivery:
     type: s3_publish
