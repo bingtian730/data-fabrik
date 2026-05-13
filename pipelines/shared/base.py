@@ -13,7 +13,32 @@ if TYPE_CHECKING:
     from pipelines.shared.registry import TaskBuilder
     from pipelines.shared.schema import PipelineConfig
 
+
 STAGES: tuple[str, ...] = ("ingestion", "transformation", "validation", "delivery")
+
+
+# ── Airflow callback helpers ───────────────────────────────────────────────────
+
+def _dag_success(context: dict) -> None:
+    from pipelines.shared.metadata import upsert_pipeline_run
+    upsert_pipeline_run(context, "success")
+
+
+def _dag_failure(context: dict) -> None:
+    from pipelines.shared.metadata import upsert_pipeline_run
+    exc = context.get("exception")
+    upsert_pipeline_run(context, "failed", error=str(exc) if exc else None)
+
+
+def _task_success(context: dict) -> None:
+    from pipelines.shared.metadata import write_task_run
+    write_task_run(context, "success")
+
+
+def _task_failure(context: dict) -> None:
+    from pipelines.shared.metadata import write_task_run
+    exc = context.get("exception")
+    write_task_run(context, "failed", error=str(exc) if exc else None)
 
 
 class BasePipeline(ABC):
@@ -38,6 +63,8 @@ class BasePipeline(ABC):
         """Return the builder for a stage type, or raise KeyError."""
 
     def build_dag(self, **dag_overrides: Any) -> DAG:
+        from pipelines.shared.metadata import upsert_lineage
+
         schedule = self.config.schedule
         dag_kwargs: dict[str, Any] = dict(
             dag_id=self.config.dag_id,
@@ -48,6 +75,8 @@ class BasePipeline(ABC):
             catchup=schedule.catchup,
             max_active_runs=schedule.max_active_runs,
             tags=self.config.tags,
+            on_success_callback=_dag_success,
+            on_failure_callback=_dag_failure,
             default_args={
                 "owner": self.config.owner,
                 **schedule.to_airflow_default_args(),
@@ -56,6 +85,12 @@ class BasePipeline(ABC):
         )
         dag_kwargs.update(dag_overrides)
         dag = DAG(**dag_kwargs)
+
+        # Persist topology so lineage is queryable without a run.
+        try:
+            upsert_lineage(self.config)
+        except Exception:
+            pass  # non-fatal — DAG must still register
 
         previous: BaseOperator | TaskGroup | None = None
         for stage in STAGES:
@@ -75,7 +110,6 @@ class BasePipeline(ABC):
             if not rules:
                 return EmptyOperator(task_id="validation_skipped", dag=dag)
 
-            # Suffix duplicate types so task ids stay unique within the group.
             type_totals: dict[str, int] = {}
             for r in rules:
                 type_totals[r.type] = type_totals.get(r.type, 0) + 1
@@ -90,12 +124,14 @@ class BasePipeline(ABC):
                         else rule.type
                     )
                     builder = self._resolve_task_builder(stage, rule.type)
-                    builder(
+                    op = builder(
                         stage=task_id,
                         stage_config=rule,
                         pipeline=self.config,
                         dag=dag,
                     )
+                    op.on_success_callback = _task_success
+                    op.on_failure_callback = _task_failure
             return tg
 
         # Other stages: optional single operator
@@ -103,9 +139,12 @@ class BasePipeline(ABC):
             return EmptyOperator(task_id=f"{stage}_skipped", dag=dag)
 
         builder = self._resolve_task_builder(stage, stage_value.type)
-        return builder(
+        op = builder(
             stage=stage,
             stage_config=stage_value,
             pipeline=self.config,
             dag=dag,
         )
+        op.on_success_callback = _task_success
+        op.on_failure_callback = _task_failure
+        return op
