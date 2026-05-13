@@ -91,7 +91,9 @@ A Hive catalog backed by MinIO is **not** configured yet — adding one requires
 | `GET /`               | Service info                                             |
 | `GET /health`         | Health check (used by Docker healthcheck)                |
 | `GET /dashboard`      | Pipeline health dashboard (HTML, auto-refreshes 30s)     |
-| `GET /api/pipelines`  | Pipeline health data as JSON                             |
+| `GET /api/pipelines`  | Pipeline health + 30-day success rate as JSON            |
+| `GET /api/runs`       | Recent DAG-level run records from `pipeline_runs`        |
+| `GET /api/lineage`    | Source → transform → delivery topology per pipeline      |
 
 ## Pipeline Health Dashboard
 
@@ -134,11 +136,80 @@ If you prefer the terminal, `./scripts/pipeline-status.sh` prints the same infor
 
 ### Raw JSON
 
-The underlying data is also available as JSON at `GET /api/pipelines` — useful for integrating with other tooling:
+All dashboard data is available as JSON:
 
 ```bash
-curl http://localhost:8000/api/pipelines | jq .
+curl http://localhost:8000/api/pipelines | jq .   # pipeline health + 30d success rate
+curl http://localhost:8000/api/runs      | jq .   # last 25 DAG-level run records
+curl http://localhost:8000/api/lineage   | jq .   # source → transform → delivery topology
 ```
+
+## Pipeline Metadata Tracking
+
+Every pipeline run automatically writes structured metadata to `pipeline_metadata` schema in Postgres. This gives you a queryable audit trail independent of the Airflow UI.
+
+### Tables
+
+| Table | What it stores | Populated by |
+| --- | --- | --- |
+| `pipeline_runs` | One row per DAG run — state, start/end time, duration, error message | Airflow DAG-level `on_success_callback` / `on_failure_callback` |
+| `task_runs` | One row per task attempt — stage, state, duration, retry number, error | Airflow task-level `on_success_callback` / `on_failure_callback` |
+| `pipeline_lineage` | Static topology: source type/location → transform → delivery | Written at DAG parse time from the YAML config |
+| `ingestion_log` | JDBC-specific detail — rows extracted, watermark range, S3 path | JDBC ingestion builder (existing) |
+| `watermarks` | Last watermark per pipeline+table for incremental extraction | JDBC ingestion builder (existing) |
+
+### Useful queries
+
+```sql
+-- Last 10 runs across all pipelines
+SELECT pipeline_id, state, started_at, duration_seconds, error_message
+FROM pipeline_metadata.pipeline_runs
+ORDER BY started_at DESC
+LIMIT 10;
+
+-- Failed tasks with error messages
+SELECT pipeline_id, task_id, stage, try_number, error_message, started_at
+FROM pipeline_metadata.task_runs
+WHERE state = 'failed'
+ORDER BY started_at DESC
+LIMIT 20;
+
+-- Retry counts per pipeline (runs that needed more than one attempt)
+SELECT pipeline_id, task_id, MAX(try_number) AS max_tries, COUNT(*) AS total_attempts
+FROM pipeline_metadata.task_runs
+GROUP BY pipeline_id, task_id
+HAVING MAX(try_number) > 1
+ORDER BY max_tries DESC;
+
+-- Pipeline lineage (source → transform → delivery)
+SELECT pipeline_id, source_type, source_location,
+       transform_type, transform_target,
+       delivery_type, delivery_location
+FROM pipeline_metadata.pipeline_lineage
+ORDER BY pipeline_id;
+
+-- 7-day success rate per pipeline
+SELECT pipeline_id,
+       COUNT(*) FILTER (WHERE state = 'success') AS ok,
+       COUNT(*) FILTER (WHERE state = 'failed')  AS failed,
+       ROUND(
+         COUNT(*) FILTER (WHERE state = 'success')::numeric /
+         NULLIF(COUNT(*) FILTER (WHERE state IN ('success','failed')), 0) * 100, 1
+       ) AS success_pct
+FROM pipeline_metadata.pipeline_runs
+WHERE started_at >= NOW() - INTERVAL '7 days'
+GROUP BY pipeline_id
+ORDER BY success_pct ASC NULLS LAST;
+```
+
+### How it works
+
+Metadata is written automatically — no changes needed to pipeline YAML files.
+
+- **Lineage** is captured at DAG parse time. Every time Airflow loads a YAML config, the pipeline's source, transform, and delivery topology is upserted into `pipeline_lineage`.
+- **Run records** are written by Airflow callbacks registered on the DAG object in `BasePipeline.build_dag()`. Success and failure are both captured; failures include the exception message.
+- **Task records** are written by callbacks attached to every operator in `BasePipeline._build_stage()`, including individual validation rules inside the validation TaskGroup. `try_number` increments on each Airflow retry so you can see exactly how many attempts a task needed.
+- All writes are **best-effort** — a metadata write failure never blocks a pipeline run.
 
 ## Common commands
 
