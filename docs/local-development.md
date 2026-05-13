@@ -203,21 +203,234 @@ DataFabrik pipelines are config-driven. Adding a new customer pipeline is a YAML
 | validation     | `row_count`, `schema`, `freshness`      |
 | delivery       | `s3_publish`, `slack_notify`, `webhook` |
 
-All builders are currently print-stubs — real implementations come in follow-up tickets. See [pipelines/shared/builders/](../pipelines/shared/builders/) for their config contracts.
+All builders are real implementations backed by boto3, requests, PostgresHook, and Docker SDK (for dbt). See [pipelines/shared/builders/](../pipelines/shared/builders/) for their config contracts.
 
-### Adding a new pipeline
+### Adding a new pipeline — step by step
+
+This is the complete workflow for shipping a new data pipeline from raw source data to a queryable Postgres table. The Stripe pipeline (`stripe_daily`) was built following exactly these steps.
+
+---
+
+#### Step 1 — Upload raw data to MinIO
+
+Put the source file into the `customer-landing` bucket under a prefix that matches your pipeline name.
 
 ```bash
-# 1. Drop a YAML in this directory
-cp orchestration/airflow/configs/pipelines/example_customer.yaml \
-   orchestration/airflow/configs/pipelines/acme_daily.yaml
-vim orchestration/airflow/configs/pipelines/acme_daily.yaml
-
-# 2. Wait ~30s for the scheduler to pick it up, then verify
-docker compose exec airflow-scheduler airflow dags list | grep acme
+# Using boto3 from inside the Airflow container
+docker compose exec airflow-scheduler python3 -c "
+import boto3
+s3 = boto3.client('s3', endpoint_url='http://minio:9000',
+                  aws_access_key_id='minioadmin', aws_secret_access_key='minioadmin')
+with open('/path/to/your/data.csv', 'rb') as f:
+    s3.put_object(Bucket='customer-landing', Key='your_pipeline/data.csv', Body=f.read())
+print('Uploaded')
+"
 ```
 
-The schema is enforced by [PipelineConfig](../pipelines/shared/config.py); invalid YAML fails fast at DAG parse time with a clear error.
+Or use the **MinIO console** at http://localhost:9001 (`minioadmin` / `minioadmin`) for drag-and-drop uploads.
+
+Bucket layout to follow:
+
+| Bucket | Stage | What goes here |
+| --- | --- | --- |
+| `customer-landing` | source | Raw files from the customer / API |
+| `datafabrik-raw` | bronze | Copied here by the ingestion task |
+| `datafabrik-curated` | gold | Delivered here by the delivery task |
+
+---
+
+#### Step 2 — Create dbt models
+
+Create a folder under `dbt/datafabrik_models/models/<your_pipeline>/` with at least one `.sql` file. Models are materialised as **tables** in the `analytics` Postgres schema.
+
+```
+dbt/datafabrik_models/models/
+└── your_pipeline/
+    ├── stg_your_pipeline.sql          # staging — clean/rename raw fields
+    └── your_pipeline_summary.sql      # analytics — aggregate or join
+```
+
+**Staging model** (`stg_your_pipeline.sql`) — selects and cleans the raw data:
+
+```sql
+SELECT
+    id,
+    customer_id,
+    amount / 100.0  AS amount_usd,
+    status,
+    created_at::DATE AS event_date
+FROM (VALUES
+    (1, 'cus_001', 4999, 'succeeded', '2026-05-13'::timestamp),
+    (2, 'cus_002',  999, 'failed',    '2026-05-13'::timestamp)
+) AS t(id, customer_id, amount, status, created_at)
+```
+
+**Analytics model** (`your_pipeline_summary.sql`) — references the staging model using `{{ ref(...) }}`:
+
+```sql
+SELECT
+    event_date,
+    status,
+    COUNT(*)          AS total,
+    SUM(amount_usd)   AS revenue_usd
+FROM {{ ref('stg_your_pipeline') }}
+GROUP BY event_date, status
+```
+
+Test the models run cleanly before wiring them into the pipeline:
+
+```bash
+docker compose exec dbt dbt run --select your_pipeline
+```
+
+Check the tables appeared in Postgres:
+
+```bash
+docker compose exec postgres psql -U datafabrik -d datafabrik \
+  -c "\dt analytics.*"
+```
+
+---
+
+#### Step 3 — Create the pipeline YAML
+
+Create `orchestration/airflow/configs/pipelines/your_pipeline_daily.yaml`:
+
+```yaml
+pipeline_id: your_pipeline_daily        # must be unique; becomes the Airflow DAG id
+description: One-line description.
+owner: data-platform
+tags:
+  - your_pipeline
+
+schedule:
+  preset: "@daily"                       # or cron: "0 6 * * *"
+  timezone: UTC
+  start_date: 2026-01-01T00:00:00
+  catchup: false
+  max_active_runs: 1
+  retries: 1
+  retry_delay_minutes: 5
+
+stages:
+  ingestion:
+    type: s3_csv
+    source_bucket: customer-landing
+    source_key: your_pipeline/*.csv      # glob — matches all CSVs in the prefix
+    dest_bucket: datafabrik-raw
+    dest_prefix: your_pipeline/{{ ds }}/
+
+  transformation:
+    type: dbt
+    project_dir: /usr/app/dbt
+    profiles_dir: /usr/app/dbt
+    select: your_pipeline                # matches the dbt model folder name
+    target: dev
+
+  validation:
+    - type: row_count
+      connection_id: postgres_default
+      table: analytics.stg_your_pipeline
+      min_rows: 1
+    - type: row_count
+      connection_id: postgres_default
+      table: analytics.your_pipeline_summary
+      min_rows: 1
+
+  delivery:
+    type: s3_publish
+    source_bucket: datafabrik-raw
+    source_prefix: your_pipeline/{{ ds }}/
+    dest_bucket: datafabrik-curated
+    dest_prefix: your_pipeline/{{ ds }}/
+```
+
+The schema validates your YAML at parse time — typos and unknown fields fail immediately.
+
+---
+
+#### Step 4 — Verify the DAG appears in Airflow
+
+The scheduler polls for new YAML files every ~30 seconds. Check it registered:
+
+```bash
+docker compose exec airflow-scheduler airflow dags list | grep your_pipeline
+```
+
+Or open http://localhost:8080 — the DAG will appear in the list automatically.
+
+---
+
+#### Step 5 — Trigger a manual run
+
+```bash
+docker compose exec airflow-scheduler airflow dags trigger \
+  your_pipeline_daily \
+  --run-id "test_1" \
+  --exec-date 2026-05-13T00:00:00
+```
+
+Watch task progress:
+
+```bash
+docker compose exec airflow-scheduler \
+  airflow tasks states-for-dag-run your_pipeline_daily test_1
+```
+
+Or watch it in the Airflow UI — click the DAG name → Graph view to see tasks turn green in real time.
+
+---
+
+#### Step 6 — Check results in Postgres
+
+Connect with any Postgres client (see credentials above) or via the terminal:
+
+```bash
+docker compose exec postgres psql -U datafabrik -d datafabrik
+```
+
+Then query your models:
+
+```sql
+-- check the staging table
+SELECT * FROM analytics.stg_your_pipeline LIMIT 5;
+
+-- check the analytics summary
+SELECT * FROM analytics.your_pipeline_summary;
+```
+
+If validation passed, both tables will have rows. If a validation task failed, check its log in the Airflow UI — the error message will tell you the row count that was found vs the minimum required.
+
+---
+
+#### Step 7 — Commit and push
+
+```bash
+git add \
+  dbt/datafabrik_models/models/your_pipeline/ \
+  orchestration/airflow/configs/pipelines/your_pipeline_daily.yaml
+
+git commit -m "add your_pipeline pipeline"
+git push origin main
+```
+
+The pipeline is now in version control and will be picked up automatically on any machine that runs `docker compose up`.
+
+---
+
+#### Quick reference — full checklist
+
+```
+[ ] Upload raw data to customer-landing/<pipeline>/ in MinIO
+[ ] Create dbt/datafabrik_models/models/<pipeline>/stg_<pipeline>.sql
+[ ] Create dbt/datafabrik_models/models/<pipeline>/<pipeline>_summary.sql
+[ ] Run: docker compose exec dbt dbt run --select <pipeline>  (verify locally)
+[ ] Create orchestration/airflow/configs/pipelines/<pipeline>_daily.yaml
+[ ] Run: airflow dags list | grep <pipeline>  (confirm DAG registered)
+[ ] Trigger a manual run and watch tasks go green in the UI
+[ ] Query analytics.<pipeline>_summary in Postgres
+[ ] Commit and push
+```
 
 ### Pipeline commands
 
