@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import requests as _requests
 from fastapi import FastAPI
@@ -44,14 +44,32 @@ def _fmt_date(dt: str | None) -> str:
     return dt[:16].replace("T", " ")
 
 
+def _success_rate(runs_30d: list[dict]) -> tuple[int, int, float | None]:
+    """Return (total, successful, pct) for a list of run dicts."""
+    finished = [r for r in runs_30d if r.get("state") in ("success", "failed")]
+    total = len(finished)
+    successful = sum(1 for r in finished if r.get("state") == "success")
+    pct = round(successful / total * 100, 1) if total > 0 else None
+    return total, successful, pct
+
+
 def get_pipeline_data() -> list[dict]:
+    thirty_days_ago = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     dags_resp = _airflow("/dags?limit=100")
     dags = {d["dag_id"]: d for d in dags_resp.get("dags", [])}
 
-    runs: dict[str, dict] = {}
+    latest_runs: dict[str, dict] = {}
+    monthly_runs: dict[str, list] = {}
     for dag_id in dags:
-        r = _airflow(f"/dags/{dag_id}/dagRuns?limit=1&order_by=-start_date")
-        runs[dag_id] = r.get("dag_runs", [{}])[0] if r.get("dag_runs") else {}
+        latest = _airflow(f"/dags/{dag_id}/dagRuns?limit=1&order_by=-start_date")
+        latest_runs[dag_id] = latest.get("dag_runs", [{}])[0] if latest.get("dag_runs") else {}
+
+        monthly = _airflow(
+            f"/dags/{dag_id}/dagRuns"
+            f"?limit=500&order_by=-start_date&start_date_gte={thirty_days_ago}"
+        )
+        monthly_runs[dag_id] = monthly.get("dag_runs", [])
 
     with engine.connect() as conn:
         il_rows = conn.execute(text("""
@@ -70,10 +88,11 @@ def get_pipeline_data() -> list[dict]:
 
     pipelines = []
     for dag_id, dag in dags.items():
-        run = runs.get(dag_id) or {}
+        run = latest_runs.get(dag_id) or {}
         il  = ingestion.get(dag_id)
         state = "paused" if dag.get("is_paused") else (run.get("state") or "no runs")
         dur = f"{il[2]}s" if il and il[2] else _duration(run.get("start_date"), run.get("end_date"))
+        total_30d, ok_30d, pct = _success_rate(monthly_runs.get(dag_id, []))
         pipelines.append({
             "id":        dag_id,
             "state":     state,
@@ -81,6 +100,9 @@ def get_pipeline_data() -> list[dict]:
             "duration":  dur,
             "rows":      str(il[1]) if il and il[1] is not None else "—",
             "watermark": il[4] or "—" if il else "—",
+            "runs_30d":  total_30d,
+            "ok_30d":    ok_30d,
+            "pct_30d":   pct,
         })
 
     pipelines.sort(key=lambda p: p["id"])
@@ -156,6 +178,15 @@ tbody td { padding: 13px 16px; font-size: .88rem; }
 a.af-link { color: #63b3ed; text-decoration: none; font-size: .8rem; }
 a.af-link:hover { text-decoration: underline; }
 .refresh { font-size: .75rem; color: #4a5568; margin-top: 16px; text-align: right; }
+.bar-wrap { background: #2d3748; border-radius: 4px; height: 6px; width: 100px; margin-top: 5px; }
+.bar-fill { height: 6px; border-radius: 4px; }
+.bar-hi  { background: #48bb78; }
+.bar-mid { background: #ecc94b; }
+.bar-lo  { background: #fc8181; }
+.pct-lbl { font-size: .78rem; font-weight: 600; }
+.pct-hi  { color: #48bb78; }
+.pct-mid { color: #ecc94b; }
+.pct-lo  { color: #fc8181; }
 """
 
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -176,6 +207,18 @@ def dashboard() -> str:
     for p in pipelines:
         badge, row_cls = _STATE_BADGE.get(p["state"], (f'<span class="badge none">{p["state"]}</span>', ""))
         af_url = f"http://localhost:8080/dags/{p['id']}/grid"
+
+        pct = p["pct_30d"]
+        if pct is None:
+            pct_cell = '<span style="color:#4a5568;font-size:.8rem">no data</span>'
+        else:
+            tier = "hi" if pct >= 90 else ("mid" if pct >= 70 else "lo")
+            pct_cell = (
+                f'<span class="pct-lbl pct-{tier}">{pct}%</span>'
+                f'<div class="bar-wrap"><div class="bar-fill bar-{tier}" style="width:{pct}%"></div></div>'
+                f'<span style="font-size:.72rem;color:#718096">{p["ok_30d"]}/{p["runs_30d"]} runs</span>'
+            )
+
         rows_html += f"""
         <tr class="{row_cls}">
           <td><strong>{p['id']}</strong><br>
@@ -183,6 +226,7 @@ def dashboard() -> str:
           <td>{badge}</td>
           <td>{p['last_run']}</td>
           <td>{p['duration']}</td>
+          <td>{pct_cell}</td>
           <td>{p['rows']}</td>
           <td style="font-size:.8rem;color:#718096">{p['watermark']}</td>
         </tr>"""
@@ -223,6 +267,7 @@ def dashboard() -> str:
         <th>State</th>
         <th>Last Run (UTC)</th>
         <th>Duration</th>
+        <th>30-day Success Rate</th>
         <th>Rows</th>
         <th>Watermark</th>
       </tr>
