@@ -1,0 +1,45 @@
+version: 2
+
+models:
+  - name: stg_stripe_charges
+    description: Staged Stripe charges with normalised amount in USD.
+    columns:
+      - name: charge_id
+        description: Unique Stripe charge identifier.
+        tests:
+          - not_null
+          - unique
+      - name: customer_id
+        description: Stripe customer identifier.
+        tests:
+          - not_null
+      - name: amount_usd
+        description: Charge amount converted to USD.
+        tests:
+          - not_null
+      - name: status
+        description: Charge status reported by Stripe.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [succeeded, failed, refunded]
+      - name: charge_date
+        description: Date the charge was created (truncated from created_at).
+        tests:
+          - not_null
+
+  - name: stripe_daily_revenue
+    description: Daily revenue rollup grouped by charge date and status.
+    columns:
+      - name: charge_date
+        tests:
+          - not_null
+      - name: status
+        tests:
+          - not_null
+      - name: charge_count
+        tests:
+          - not_null
+      - name: net_revenue_usd
+        tests:
+          - not_null

@@ -18,6 +18,14 @@ if TYPE_CHECKING:
     from pipelines.shared.schema import PipelineConfig
 
 
+def _dbt_exec(container, cmd: str, workdir: str) -> None:
+    """Run a dbt command inside the container; raise on non-zero exit."""
+    exit_code, output = container.exec_run(cmd, workdir=workdir)
+    print(output.decode())
+    if exit_code != 0:
+        raise RuntimeError(f"`{cmd}` failed (exit {exit_code})")
+
+
 @register("transformation", "dbt")
 def dbt(
     *,
@@ -30,11 +38,19 @@ def dbt(
         import docker
         client = docker.from_env()
         container = client.containers.get("datafabrik-dbt")
-        cmd = f"dbt run --select {stage_config.select} --target {stage_config.target} --profiles-dir {stage_config.profiles_dir}"
-        exit_code, output = container.exec_run(cmd, workdir=stage_config.project_dir)
-        print(output.decode())
-        if exit_code != 0:
-            raise RuntimeError(f"dbt run failed (exit {exit_code})")
+        base = (
+            f"--target {stage_config.target}"
+            f" --profiles-dir {stage_config.profiles_dir}"
+        )
+        selector = f"--select {stage_config.select}" if stage_config.select else ""
+
+        _dbt_exec(container, f"dbt run {selector} {base}".strip(), stage_config.project_dir)
+
+        if stage_config.run_tests:
+            _dbt_exec(container, f"dbt test {selector} {base}".strip(), stage_config.project_dir)
+
+        if stage_config.generate_docs:
+            _dbt_exec(container, f"dbt docs generate {base}".strip(), stage_config.project_dir)
 
     return PythonOperator(task_id=stage, python_callable=_run, dag=dag)
 

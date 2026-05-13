@@ -1,0 +1,21 @@
+version: 2
+
+models:
+  - name: acme_todos
+    description: Sample ACME todo items used for pipeline smoke testing.
+    columns:
+      - name: id
+        description: Todo item identifier.
+        tests:
+          - not_null
+          - unique
+      - name: title
+        description: Todo item description.
+        tests:
+          - not_null
+      - name: completed
+        description: Whether the todo has been completed.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [true, false]

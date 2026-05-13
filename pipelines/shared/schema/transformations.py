@@ -17,6 +17,8 @@ class DbtTransformConfig(_TransformBase):
     profiles_dir: str = "/usr/app/dbt"
     select: str | None = Field(default=None, description="dbt --select selector.")
     target: str = "dev"
+    run_tests: bool = Field(default=True, description="Run dbt test after dbt run.")
+    generate_docs: bool = Field(default=False, description="Run dbt docs generate after tests.")
 
 
 class SqlTransformConfig(_TransformBase):
