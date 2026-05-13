@@ -1,0 +1,40 @@
+pipeline_id: stripe_postgres_ingestion
+description: Incrementally extract Stripe charges from Postgres into S3 as Parquet.
+owner: data-platform
+tags:
+  - stripe
+  - postgres
+  - ingestion
+  - incremental
+
+schedule:
+  preset: "@daily"
+  timezone: UTC
+  start_date: 2026-01-01T00:00:00
+  catchup: false
+  max_active_runs: 1
+  retries: 1
+  retry_delay_minutes: 5
+
+stages:
+  ingestion:
+    type: jdbc
+    connection_id: postgres_default
+    table: public.stripe_charges_raw
+    watermark_column: updated_at
+    watermark_init: "1970-01-01 00:00:00"
+    dest_bucket: datafabrik-raw
+    dest_prefix: stripe/postgres/
+
+  validation:
+    - type: row_count
+      connection_id: postgres_default
+      table: pipeline_metadata.ingestion_log
+      min_rows: 1
+
+  delivery:
+    type: s3_publish
+    source_bucket: datafabrik-raw
+    source_prefix: stripe/postgres/{{ ds }}/
+    dest_bucket: datafabrik-curated
+    dest_prefix: stripe/postgres/{{ ds }}/

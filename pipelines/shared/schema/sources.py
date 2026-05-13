@@ -32,13 +32,21 @@ class HttpApiSourceConfig(_SourceBase):
 
 
 class JdbcSourceConfig(_SourceBase):
-    """Pull from a JDBC source via an Airflow connection."""
+    """Incrementally extract a Postgres table into S3 as Parquet.
+
+    On each run the builder reads the last watermark from
+    pipeline_metadata.watermarks, extracts rows where
+    `watermark_column > last_watermark`, writes a Parquet file to S3,
+    updates the watermark, and logs a row to pipeline_metadata.ingestion_log.
+    """
 
     type: Literal["jdbc"]
     connection_id: str
-    query: str
+    table: str = Field(description="Fully-qualified source table, e.g. 'public.stripe_charges_raw'.")
+    watermark_column: str = Field(default="updated_at", description="Column used for incremental extraction.")
+    watermark_init: str = Field(default="1970-01-01 00:00:00", description="Watermark used on the very first run.")
     dest_bucket: str = "datafabrik-raw"
-    dest_key: str
+    dest_prefix: str | None = None
 
 
 SourceConfig = Annotated[

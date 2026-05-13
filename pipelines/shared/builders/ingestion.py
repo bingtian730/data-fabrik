@@ -56,7 +56,10 @@ def s3_csv(
                     Bucket=stage_config.dest_bucket,
                     Key=dest_key,
                 )
-                print(f"Copied s3://{stage_config.source_bucket}/{src_key} → s3://{stage_config.dest_bucket}/{dest_key}")
+                print(
+                    f"Copied s3://{stage_config.source_bucket}/{src_key}"
+                    f" → s3://{stage_config.dest_bucket}/{dest_key}"
+                )
                 copied += 1
         if copied == 0:
             print(f"Warning: no objects found under s3://{stage_config.source_bucket}/{prefix}")
@@ -85,9 +88,77 @@ def http_api(
         dest_key = stage_config.dest_key.replace("{{ ds }}", context["ds"])
         s3 = _s3_client()
         s3.put_object(Bucket=stage_config.dest_bucket, Key=dest_key, Body=resp.content)
-        print(f"Fetched {stage_config.url} ({len(resp.content)} bytes) → s3://{stage_config.dest_bucket}/{dest_key}")
+        print(
+            f"Fetched {stage_config.url} ({len(resp.content)} bytes)"
+            f" → s3://{stage_config.dest_bucket}/{dest_key}"
+        )
 
     return PythonOperator(task_id=stage, python_callable=_run, provide_context=True, dag=dag)
+
+
+def _jdbc_read_watermark(conn, pipeline_id, table, watermark_init):
+    from datetime import datetime
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT last_watermark FROM pipeline_metadata.watermarks"
+            " WHERE pipeline_id = %s AND table_name = %s",
+            (pipeline_id, table),
+        )
+        row = cur.fetchone()
+    return row[0] if row else datetime.fromisoformat(watermark_init)
+
+
+def _jdbc_write_parquet(df, stage_config, ds):
+    import io
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    raw_prefix = stage_config.dest_prefix or stage_config.table.replace(".", "/")
+    prefix = raw_prefix.rstrip("/")
+    table_name = stage_config.table.split(".")[-1]
+    dest_key = f"{prefix}/{ds}/{table_name}_{ds}.parquet"
+    buf = io.BytesIO()
+    pq.write_table(pa.Table.from_pandas(df), buf)
+    _s3_client().put_object(
+        Bucket=stage_config.dest_bucket,
+        Key=dest_key,
+        Body=buf.getvalue(),
+        ContentType="application/octet-stream",
+    )
+    return f"s3://{stage_config.dest_bucket}/{dest_key}"
+
+
+def _jdbc_update_watermark(conn, pipeline_id, table, watermark_to):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO pipeline_metadata.watermarks
+              (pipeline_id, table_name, last_watermark, updated_at)
+            VALUES (%s, %s, %s, NOW())
+            ON CONFLICT (pipeline_id, table_name)
+            DO UPDATE SET last_watermark = EXCLUDED.last_watermark,
+                          updated_at = NOW()
+            """,
+            (pipeline_id, table, watermark_to),
+        )
+    conn.commit()
+
+
+def _jdbc_log(conn, pipeline_id, table, rows, wm_from, wm_to, duration, s3_path, error):
+    status = "failed" if error else "success"
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO pipeline_metadata.ingestion_log
+              (pipeline_id, table_name, extracted_at, rows_extracted,
+               watermark_from, watermark_to, duration_seconds,
+               s3_path, status, error_message)
+            VALUES (%s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (pipeline_id, table, rows, wm_from, wm_to, duration,
+             s3_path, status, error),
+        )
+    conn.commit()
+    print(f"[jdbc] logged run — status={status}, duration={duration}s")
 
 
 @register("ingestion", "jdbc")
@@ -99,17 +170,51 @@ def jdbc(
     dag: DAG,
 ) -> BaseOperator:
     def _run(**context):
+        import time
+        import pandas as pd
         from airflow.providers.postgres.hooks.postgres import PostgresHook
-        hook = PostgresHook(postgres_conn_id=stage_config.connection_id)
-        records = hook.get_records(stage_config.query)
-        dest_key = stage_config.dest_key.replace("{{ ds }}", context["ds"])
-        import json
-        s3 = _s3_client()
-        s3.put_object(
-            Bucket=stage_config.dest_bucket,
-            Key=dest_key,
-            Body=json.dumps(records).encode(),
+
+        conn = PostgresHook(postgres_conn_id=stage_config.connection_id).get_conn()
+        ds = context["ds"]
+        start = time.time()
+        error_msg = None
+        rows_extracted = 0
+        watermark_to = None
+        s3_path = None
+
+        watermark_from = _jdbc_read_watermark(
+            conn, pipeline.pipeline_id, stage_config.table, stage_config.watermark_init
         )
-        print(f"JDBC query returned {len(records)} rows → s3://{stage_config.dest_bucket}/{dest_key}")
+        try:
+            query = (
+                f"SELECT * FROM {stage_config.table}"
+                f" WHERE {stage_config.watermark_column} > %s"
+                f" ORDER BY {stage_config.watermark_column}"
+            )
+            df = pd.read_sql(query, conn, params=(watermark_from,))
+            rows_extracted = len(df)
+            print(
+                f"[jdbc] extracted {rows_extracted} rows from {stage_config.table}"
+                f" (watermark > {watermark_from})"
+            )
+            if rows_extracted > 0:
+                watermark_to = df[stage_config.watermark_column].max()
+                s3_path = _jdbc_write_parquet(df, stage_config, ds)
+                print(f"[jdbc] wrote {rows_extracted} rows → {s3_path}")
+                _jdbc_update_watermark(
+                    conn, pipeline.pipeline_id, stage_config.table, watermark_to
+                )
+        except Exception as exc:
+            error_msg = str(exc)
+            conn.rollback()
+            raise
+        finally:
+            duration = round(time.time() - start, 3)
+            _jdbc_log(
+                conn, pipeline.pipeline_id, stage_config.table,
+                rows_extracted, watermark_from, watermark_to,
+                duration, s3_path, error_msg,
+            )
+            conn.close()
 
     return PythonOperator(task_id=stage, python_callable=_run, provide_context=True, dag=dag)
