@@ -23,6 +23,7 @@ Then open [Airflow](http://localhost:8080) (`admin` / `admin`) in your browser.
 | Pipeline dashboard   | http://localhost:8000/dashboard    | —                               | `datafabrik-fastapi`           |
 | FastAPI docs         | http://localhost:8000/docs         | —                               | `datafabrik-fastapi`           |
 | FastAPI health       | http://localhost:8000/health       | —                               | `datafabrik-fastapi`           |
+| Metabase             | http://localhost:3000              | set on first run (see below)    | `datafabrik-metabase`          |
 | MinIO console        | http://localhost:9001              | `minioadmin` / `minioadmin`     | `datafabrik-minio`             |
 | MinIO S3 API         | http://localhost:9000              | same as console                 | `datafabrik-minio`             |
 | Presto UI            | http://localhost:8081              | —                               | `datafabrik-presto`            |
@@ -65,6 +66,87 @@ Buckets are created automatically by the `minio-init` one-shot container on `up`
 | `memory` | `memory`  | Ephemeral in-memory tables for ad-hoc experimentation    |
 
 A Hive catalog backed by MinIO is **not** configured yet — adding one requires a separate Hive metastore service.
+
+### Metabase
+
+Open **http://localhost:3000** after the stack is up. Metabase takes ~60 seconds on first boot while it migrates its schema into the `metabase` Postgres database.
+
+#### First-run setup (one time only)
+
+1. **Welcome screen** → click "Let's get started"
+2. **Create your account** — pick any email and password (local only)
+3. **Add your data** — select **PostgreSQL** and fill in:
+   | Field    | Value        |
+   | -------- | ------------ |
+   | Host     | `postgres`   |
+   | Port     | `5432`       |
+   | Database | `datafabrik` |
+   | Username | `datafabrik` |
+   | Password | `datafabrik` |
+4. Click **Connect** → **Finish**
+
+Metabase will scan the `analytics.*` schema and auto-generate browse views for every dbt model.
+
+#### Building dashboards
+
+- **Browse data** → `datafabrik` → `analytics` → click any table → Metabase auto-suggests charts
+- **New → Question** → pick a table → filter/group/summarise with the GUI (no SQL required)
+- **New → SQL query** → raw SQL editor with autocomplete against the live schema
+- **New → Dashboard** → drag questions onto a canvas, add filters
+
+> **Note:** "Our analytics" → "Example Dashboard" is Metabase's built-in sample content — ignore it. Your data is under **Browse data → DataFabrik**.
+
+#### Dashboard 1 — Stripe Revenue
+
+Go to **New → Dashboard**, name it "Stripe Revenue". Add these questions:
+
+**Total net revenue** (visualize as Number)
+- New → Question → `stg_stripe_charges` → Filter `status = succeeded` → Summarize: Sum of `amount_usd`
+
+**Charges by status** (visualize as Pie, dimension: `status`, metric: `charges`)
+```sql
+SELECT status, COUNT(*) AS charges, ROUND(SUM(amount_usd)::numeric, 2) AS total_usd
+FROM analytics.stg_stripe_charges
+GROUP BY status
+ORDER BY total_usd DESC
+```
+
+**Revenue by plan** (visualize as Bar)
+```sql
+SELECT description, SUM(amount_usd) AS revenue_usd
+FROM analytics.stg_stripe_charges
+WHERE status = 'succeeded'
+GROUP BY description
+ORDER BY revenue_usd DESC
+```
+
+#### Dashboard 2 — Pipeline Health
+
+Go to **New → Dashboard**, name it "Pipeline Health". Add these questions:
+
+**Task success rate** (visualize as Number)
+```sql
+SELECT
+  ROUND(100.0 * COUNT(*) FILTER (WHERE state = 'success') / COUNT(*), 1) AS success_pct
+FROM pipeline_metadata.task_runs
+```
+
+**Pipeline runs** (visualize as Table)
+```sql
+SELECT pipeline_id, state, duration_seconds
+FROM pipeline_metadata.pipeline_runs
+ORDER BY started_at DESC
+```
+
+**Tasks by stage and state** (visualize as Bar, x-axis: `stage`, color: `state`)
+```sql
+SELECT stage, state, COUNT(*) AS count
+FROM pipeline_metadata.task_runs
+GROUP BY stage, state
+ORDER BY stage, state
+```
+
+Metabase stores its own metadata (questions, dashboards, users) in the `metabase` Postgres database, so everything persists across `docker compose restart`.
 
 ### dbt
 

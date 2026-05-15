@@ -6,6 +6,9 @@ CREATE USER datafabrik WITH PASSWORD 'datafabrik';
 CREATE DATABASE datafabrik OWNER datafabrik;
 GRANT ALL PRIVILEGES ON DATABASE datafabrik TO datafabrik;
 
+CREATE DATABASE metabase OWNER datafabrik;
+GRANT ALL PRIVILEGES ON DATABASE metabase TO datafabrik;
+
 \connect datafabrik datafabrik
 
 CREATE SCHEMA IF NOT EXISTS pipeline_metadata;
