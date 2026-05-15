@@ -13,18 +13,21 @@ docker compose up -d           # boot the stack (3-5 min cold start)
 ./scripts/smoke-test.sh        # verify everything works
 ```
 
-Then open [Airflow](http://localhost:8080) (`admin` / `admin`) in your browser.
+Then open the **[DataFabrik Portal](http://localhost:8000)** in your browser — it gives you one-click access to all services.
 
 ## Services
 
 | Service              | Local URL                          | Default credentials             | Container name                 |
 | -------------------- | ---------------------------------- | ------------------------------- | ------------------------------ |
+| **DataFabrik Portal**| **http://localhost:8000**          | —                               | `datafabrik-fastapi`           |
 | Airflow UI           | http://localhost:8080              | `admin` / `admin`               | `datafabrik-airflow-webserver` |
 | Pipeline dashboard   | http://localhost:8000/dashboard    | —                               | `datafabrik-fastapi`           |
 | FastAPI docs         | http://localhost:8000/docs         | —                               | `datafabrik-fastapi`           |
 | FastAPI health       | http://localhost:8000/health       | —                               | `datafabrik-fastapi`           |
 | Metabase             | http://localhost:3000              | set on first run (see below)    | `datafabrik-metabase`          |
+| Metabase (in-portal) | http://localhost:3001              | same as above                   | `datafabrik-nginx-proxy`       |
 | MinIO console        | http://localhost:9001              | `minioadmin` / `minioadmin`     | `datafabrik-minio`             |
+| MinIO (in-portal)    | http://localhost:9002              | same as above                   | `datafabrik-nginx-proxy`       |
 | MinIO S3 API         | http://localhost:9000              | same as console                 | `datafabrik-minio`             |
 | Presto UI            | http://localhost:8081              | —                               | `datafabrik-presto`            |
 | Postgres             | `localhost:5433`                   | `postgres` / `postgres`         | `datafabrik-postgres`          |
@@ -168,14 +171,66 @@ Metabase stores its own metadata (questions, dashboards, users) in the `metabase
 - Hot reload is enabled — edits to files under `backend/` take effect immediately.
 - Pre-wired env: `DATABASE_URL`, `S3_ENDPOINT_URL`, `PRESTO_HOST`, `PRESTO_PORT`, `AIRFLOW_URL`.
 
-| Endpoint              | Description                                              |
-| --------------------- | -------------------------------------------------------- |
-| `GET /`               | Service info                                             |
-| `GET /health`         | Health check (used by Docker healthcheck)                |
-| `GET /dashboard`      | Pipeline health dashboard (HTML, auto-refreshes 30s)     |
-| `GET /api/pipelines`  | Pipeline health + 30-day success rate as JSON            |
-| `GET /api/runs`       | Recent DAG-level run records from `pipeline_runs`        |
-| `GET /api/lineage`    | Source → transform → delivery topology per pipeline      |
+| Endpoint                              | Description                                              |
+| ------------------------------------- | -------------------------------------------------------- |
+| `GET /`                               | DataFabrik portal (unified UI — see below)               |
+| `GET /health`                         | Health check (used by Docker healthcheck)                |
+| `GET /dashboard`                      | Pipeline health dashboard (HTML, auto-refreshes 30s)     |
+| `GET /api/pipelines`                  | Pipeline health + 30-day success rate as JSON            |
+| `GET /api/runs`                       | Recent DAG-level run records from `pipeline_runs`        |
+| `GET /api/lineage`                    | Source → transform → delivery topology per pipeline      |
+| `POST /api/pipelines/{dag_id}/trigger`| Trigger an Airflow DAG run immediately                   |
+
+## DataFabrik Portal
+
+Open **http://localhost:8000** to access the unified portal — a single UI for every tool in the local stack.
+
+### Sections
+
+| Sidebar item      | What it shows                                                                 |
+| ----------------- | ----------------------------------------------------------------------------- |
+| 🏠 **Home**       | Pipeline health summary cards + recent run history + quick-access links        |
+| 📋 **Pipelines**  | Live pipeline table with state, last run, 30-day success rate, and a **▶ Run** button per pipeline |
+| ✈️ **Airflow**    | Airflow UI embedded inline (full DAG management, logs, grid view)              |
+| 📊 **Metabase**   | Metabase dashboards embedded inline (charts, SQL editor, dashboard builder)    |
+| 🗄️ **MinIO**     | MinIO console embedded inline (bucket browser, file upload)                   |
+| 🔧 **Pipeline Builder** | No-code form to generate a pipeline YAML config and dbt model stubs     |
+
+### Triggering a pipeline run from the portal
+
+1. Click **📋 Pipelines** in the sidebar.
+2. Find the pipeline row and click **▶ Run**.
+3. A toast notification confirms the trigger. The table refreshes automatically after ~1.5 seconds showing the new `running` state.
+
+The button calls `POST /api/pipelines/{dag_id}/trigger`, which proxies to the Airflow REST API.
+
+### Pipeline Builder (no-code)
+
+The builder lets you define a new pipeline through a form without writing YAML manually.
+
+1. Click **🔧 Pipeline Builder** in the sidebar.
+2. Fill in **Pipeline Info** — name, description, owner, schedule, tags.
+3. Choose a **Data Source** type:
+   - **JDBC** — Airflow connection ID + SQL query + destination S3 key
+   - **HTTP API** — URL, method, destination S3 key
+   - **S3 CSV** — source bucket + key pattern
+4. Choose a **Transformation** (dbt or none).
+5. Click **⚙️ Generate Pipeline Config**.
+
+The portal generates a ready-to-use pipeline YAML and dbt staging/analytics SQL stubs with **Copy** buttons. Save the YAML to `orchestration/airflow/configs/pipelines/<pipeline_id>.yaml` and the dbt SQL files to `dbt/datafabrik_models/models/<pipeline_id>/`.
+
+### Embedded tools — how it works
+
+Airflow, Metabase, and MinIO are served inside `<iframe>` elements in the portal. Airflow allows framing natively (configured via `AIRFLOW__WEBSERVER__X_FRAME_ENABLED: "False"`). Metabase and MinIO both send `X-Frame-Options: DENY` by default, which browsers enforce by refusing to render the iframe.
+
+To work around this, a lightweight **Nginx reverse proxy** (`datafabrik-nginx-proxy`) sits in front of those two services and strips the blocking headers before they reach the browser:
+
+| Proxy URL            | Proxies to        | Header stripped              |
+| -------------------- | ----------------- | ---------------------------- |
+| `localhost:3001`     | `metabase:3000`   | `X-Frame-Options`, CSP `frame-ancestors: none` |
+| `localhost:9002`     | `minio:9001`      | `X-Frame-Options`            |
+
+The portal iframes point at the proxy ports, not the direct service ports. If you need to access Metabase or MinIO outside the portal (e.g. from another tool), use their direct ports (`3000` and `9001`).
 
 ## Pipeline Health Dashboard
 
@@ -757,6 +812,7 @@ backend/app/main.py                   FastAPI entrypoint
 dbt/datafabrik_models/                dbt project (profile + models)
 infra/docker/
   fastapi/                            FastAPI image
+  nginx/nginx.conf                    Reverse proxy (strips X-Frame-Options for Metabase + MinIO)
   postgres/init.sql                   Bootstrap databases + users
   minio/create-buckets.sh             Bootstrap MinIO buckets
   presto/catalog/                     Presto catalog config (.properties)
