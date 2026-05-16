@@ -487,17 +487,19 @@ select.form-control{cursor:pointer}
                 <input id="b-conn" class="form-control" placeholder="e.g. acme_postgres" type="text">
               </div>
               <div class="form-group">
-                <label class="form-label">Table Name(s)</label>
-                <input id="b-tables" class="form-control" placeholder="e.g. orders, customers" type="text">
+                <label class="form-label">Source Table * (schema.table)</label>
+                <input id="b-table" class="form-control" placeholder="e.g. public.orders" type="text">
               </div>
             </div>
-            <div class="form-group">
-              <label class="form-label">SQL Query *</label>
-              <textarea id="b-query" class="form-control" rows="3" placeholder="SELECT * FROM orders WHERE updated_at > \'{{ ds }}\'"></textarea>
-            </div>
-            <div class="form-group">
-              <label class="form-label">Destination Key (S3)</label>
-              <input id="b-dest-key" class="form-control" placeholder="e.g. acme/orders/{{ ds }}.parquet" type="text">
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">Watermark Column</label>
+                <input id="b-watermark" class="form-control" placeholder="updated_at" type="text" value="updated_at">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Destination Prefix (S3)</label>
+                <input id="b-dest-prefix" class="form-control" placeholder="auto-generated from pipeline name" type="text">
+              </div>
             </div>
           </div>
           <!-- HTTP API fields -->
@@ -749,11 +751,13 @@ async function generatePipeline() {
 
   let ingestion;
   if (srcType === 'jdbc') {
-    const connId = document.getElementById('b-conn').value.trim();
-    const query  = document.getElementById('b-query').value.trim();
-    const destKey = document.getElementById('b-dest-key').value.trim() || `${pipelineId}/{{ ds }}.parquet`;
-    if (!connId || !query) { toast('Connection ID and query are required for JDBC', 'err'); return; }
-    ingestion = {type:'jdbc', connection_id:connId, query, dest_key:destKey};
+    const connId    = document.getElementById('b-conn').value.trim();
+    const table     = document.getElementById('b-table').value.trim();
+    const watermark = document.getElementById('b-watermark').value.trim() || 'updated_at';
+    const destPfx   = document.getElementById('b-dest-prefix').value.trim() || null;
+    if (!connId || !table) { toast('Connection ID and table are required for JDBC', 'err'); return; }
+    ingestion = {type:'jdbc', connection_id:connId, table, watermark_column:watermark,
+                 ...(destPfx && {dest_prefix:destPfx})};
   } else if (srcType === 'http_api') {
     const url = document.getElementById('b-url').value.trim();
     const method = document.getElementById('b-method').value;
@@ -937,9 +941,13 @@ def _validate_config(data: dict) -> list[dict]:
             errors.append({"field": "stages.ingestion.type",
                             "message": f"Must be one of: {', '.join(sorted(valid_src))}. Got '{src_type}'"})
         elif src_type == "jdbc":
-            for f in ("connection_id", "query", "dest_key"):
+            for f in ("connection_id", "table"):
                 if not ingestion.get(f):
                     errors.append({"field": f"stages.ingestion.{f}", "message": "Required for JDBC source"})
+            for bad in ("query", "dest_key"):
+                if ingestion.get(bad):
+                    errors.append({"field": f"stages.ingestion.{bad}",
+                                   "message": f"Not a valid JDBC field — use 'table' instead of 'query', and remove 'dest_key'"})
         elif src_type == "http_api":
             for f in ("url", "dest_key"):
                 if not ingestion.get(f):
@@ -1033,8 +1041,8 @@ stages:
   ingestion:
     type: jdbc
     connection_id: my_connection_id
-    query: "SELECT * FROM my_table WHERE updated_at > '{{ ds }}'"
-    dest_key: my_pipeline/{{ ds }}.parquet
+    table: public.my_table
+    watermark_column: updated_at
   transformation:
     type: dbt
     select: stg_my_pipeline_daily"""
