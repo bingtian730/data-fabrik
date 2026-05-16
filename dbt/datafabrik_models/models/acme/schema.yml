@@ -19,3 +19,111 @@ models:
           - not_null
           - accepted_values:
               values: [true, false]
+
+  - name: stg_acme_customers
+    description: Cleaned customer profiles — trimmed names, canonical status, normalized phone digits.
+    columns:
+      - name: customer_id
+        tests:
+          - not_null
+          - unique
+      - name: first_name
+        tests:
+          - not_null
+      - name: last_name
+        tests:
+          - not_null
+      - name: status
+        tests:
+          - not_null
+          - accepted_values:
+              values: [active, inactive, suspended, unknown]
+
+  - name: stg_acme_invoices
+    description: Cleaned invoice records — amounts rounded to 2dp, status normalized, currency uppercased.
+    columns:
+      - name: invoice_id
+        tests:
+          - not_null
+          - unique
+      - name: customer_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_acme_customers')
+              field: customer_id
+      - name: amount
+        tests:
+          - not_null
+      - name: currency
+        tests:
+          - not_null
+          - accepted_values:
+              values: [USD, EUR, GBP]
+      - name: status
+        tests:
+          - not_null
+          - accepted_values:
+              values: [paid, unpaid, overdue, cancelled, unknown]
+
+  - name: stg_acme_customer_orders
+    description: Cleaned order line items — integer quantities, rounded prices, computed line totals, canonical status.
+    columns:
+      - name: order_id
+        tests:
+          - not_null
+          - unique
+      - name: customer_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_acme_customers')
+              field: customer_id
+      - name: invoice_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_acme_invoices')
+              field: invoice_id
+      - name: product_name
+        tests:
+          - not_null
+      - name: quantity
+        tests:
+          - not_null
+      - name: unit_price
+        tests:
+          - not_null
+      - name: line_total
+        tests:
+          - not_null
+      - name: status
+        tests:
+          - not_null
+          - accepted_values:
+              values: [completed, pending, cancelled, unknown]
+
+  - name: acme_customer_summary
+    description: Per-customer aggregation — invoice totals, paid/outstanding amounts, completed order counts.
+    columns:
+      - name: customer_id
+        tests:
+          - not_null
+          - unique
+      - name: customer_status
+        tests:
+          - accepted_values:
+              values: [active, inactive, suspended, unknown]
+
+  - name: acme_revenue_summary
+    description: Daily revenue summary by currency — invoice counts, paid/outstanding totals, payment rate.
+    columns:
+      - name: issue_date
+        tests:
+          - not_null
+      - name: currency
+        tests:
+          - not_null
+      - name: total_invoiced
+        tests:
+          - not_null

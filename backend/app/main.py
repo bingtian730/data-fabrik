@@ -5,9 +5,13 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import csv
+import io
+import re
+
 import requests as _requests
 import yaml
-from fastapi import FastAPI
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy import create_engine, text
@@ -347,6 +351,9 @@ select.form-control{cursor:pointer}
     </button>
     <a class="nav-btn" href="/onboard" target="_blank" style="text-decoration:none">
       <span class="icon">🚀</span> Onboard Customer
+    </a>
+    <a class="nav-btn" href="/upload" target="_blank" style="text-decoration:none">
+      <span class="icon">📤</span> Upload Data
     </a>
   </div>
   <div class="sb-footer">Local Development</div>
@@ -1359,6 +1366,206 @@ _ONBOARD_HTML = (
 def onboard() -> str:
     """Customer pipeline onboarding UI."""
     return _ONBOARD_HTML
+
+
+# ── CSV Upload ────────────────────────────────────────────────────────────────
+
+def _safe_name(s: str) -> str:
+    """Lowercase and replace non-alphanumeric chars with underscores."""
+    return re.sub(r"[^a-z0-9_]", "_", s.lower().strip()).strip("_") or "col"
+
+_UPLOAD_HTML = (
+    '<!DOCTYPE html><html lang="en"><head>'
+    '<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+    '<title>DataFabrik — Upload Data</title>'
+    '<style>'
+    '*{box-sizing:border-box;margin:0;padding:0}'
+    'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh}'
+    '.topbar{background:#1a1f2e;border-bottom:1px solid #2d3748;padding:14px 32px;display:flex;align-items:center;gap:14px}'
+    '.logo{width:28px;height:28px;background:#3182ce;border-radius:6px;display:flex;align-items:center;justify-content:center}'
+    '.logo svg{width:16px;height:16px}'
+    '.topbar h1{font-size:1rem;font-weight:700}'
+    '.topbar a{margin-left:auto;font-size:.8rem;color:#63b3ed;text-decoration:none}'
+    '.topbar a:hover{text-decoration:underline}'
+    '.page{max-width:680px;margin:0 auto;padding:40px 24px}'
+    '.hero{margin-bottom:32px}'
+    '.hero h2{font-size:1.5rem;font-weight:700;margin-bottom:8px}'
+    '.hero p{color:#a0aec0;font-size:.9rem;line-height:1.6}'
+    '.card{background:#1a1f2e;border:1px solid #2d3748;border-radius:12px;padding:24px;margin-bottom:20px}'
+    '.card-label{font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#718096;margin-bottom:12px}'
+    '.drop-zone{border:2px dashed #2d3748;border-radius:10px;padding:48px 24px;text-align:center;'
+    'cursor:pointer;transition:border-color .2s,background .2s;position:relative}'
+    '.drop-zone:hover,.drop-zone.drag{border-color:#3182ce;background:#0d1627}'
+    '.drop-zone.done{border-color:#48bb78;background:#0d1f14;border-style:solid}'
+    '.drop-zone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}'
+    '.dz-icon{font-size:2.2rem;margin-bottom:12px;display:block}'
+    '.dz-main{font-size:.95rem;color:#a0aec0;margin-bottom:4px}'
+    '.dz-sub{font-size:.78rem;color:#4a5568}'
+    '.dz-name{font-size:1rem;font-weight:600;color:#68d391}'
+    '.field-row{display:flex;align-items:center;gap:12px;margin-top:16px}'
+    '.field-label{font-size:.8rem;color:#718096;white-space:nowrap;min-width:90px}'
+    '.field-prefix{font-size:.85rem;color:#4a5568}'
+    'input[type=text]{background:#0d1117;border:1px solid #2d3748;border-radius:6px;'
+    'padding:8px 12px;color:#e2e8f0;font-size:.875rem;outline:none;flex:1;'
+    'transition:border-color .15s}'
+    'input[type=text]:focus{border-color:#3182ce}'
+    '.preview-wrap{overflow-x:auto}'
+    '.preview-tbl{width:100%;border-collapse:collapse;font-size:.75rem}'
+    '.preview-tbl th{background:#232a3b;color:#718096;padding:6px 10px;text-align:left;'
+    'border-bottom:1px solid #2d3748;white-space:nowrap}'
+    '.preview-tbl td{padding:5px 10px;border-bottom:1px solid #1a1f2e;color:#a0aec0;white-space:nowrap}'
+    '.preview-tbl tr:last-child td{border-bottom:none}'
+    '.row-count{font-size:.75rem;color:#4a5568;margin-top:8px}'
+    '.actions{display:flex;align-items:center;gap:16px}'
+    '.btn{display:inline-flex;align-items:center;gap:6px;padding:11px 28px;border-radius:8px;'
+    'font-size:.875rem;font-weight:600;cursor:pointer;border:none;transition:opacity .15s,background .15s}'
+    '.btn:disabled{opacity:.4;cursor:not-allowed}'
+    '.btn-primary{background:#3182ce;color:#fff}.btn-primary:hover:not(:disabled){background:#2b6cb0}'
+    '.spin-wrap{display:flex;align-items:center;gap:8px;font-size:.85rem;color:#718096}'
+    '.spinner{width:14px;height:14px;border:2px solid #2d3748;border-top-color:#63b3ed;'
+    'border-radius:50%;animation:spin .6s linear infinite}'
+    '@keyframes spin{to{transform:rotate(360deg)}}'
+    '.result-ok{color:#68d391;font-weight:600;font-size:.9rem}'
+    '.result-err{color:#fc8181;font-size:.9rem}'
+    '</style></head><body>'
+    '<div class="topbar">'
+    '<div class="logo"><svg viewBox="0 0 16 16" fill="none">'
+    '<rect width="16" height="16" rx="3" fill="#3182ce"/>'
+    '<path d="M4 8h8M8 4v8" stroke="white" stroke-width="1.8" stroke-linecap="round"/>'
+    '</svg></div>'
+    '<h1>DataFabrik — Upload Data</h1>'
+    '<a href="/">← Back to Portal</a>'
+    '</div>'
+    '<div class="page">'
+    '<div class="hero">'
+    '<h2>Upload a CSV file</h2>'
+    '<p>Drop any CSV — columns are auto-detected from the header row. '
+    'The file is loaded into the <code style="color:#63b3ed;font-size:.85em">raw</code> schema '
+    'and replaces any existing data in that table.</p>'
+    '</div>'
+    '<div class="card">'
+    '<div class="card-label">1 &nbsp; Choose your file</div>'
+    '<div class="drop-zone" id="dz">'
+    '<input type="file" id="fi" accept=".csv" onchange="onFile(this)">'
+    '<div id="dz-idle">'
+    '<span class="dz-icon">📂</span>'
+    '<div class="dz-main">Drop a CSV file here, or click to browse</div>'
+    '<div class="dz-sub">.csv files only</div>'
+    '</div>'
+    '<div id="dz-done" style="display:none">'
+    '<span class="dz-icon">✅</span>'
+    '<div class="dz-name" id="dz-fname"></div>'
+    '<div class="dz-sub" id="dz-fsize"></div>'
+    '</div>'
+    '</div>'
+    '<div class="field-row">'
+    '<span class="field-label">Table name</span>'
+    '<span class="field-prefix">raw.</span>'
+    '<input type="text" id="tbl-input" placeholder="my_table" oninput="checkReady()">'
+    '</div>'
+    '</div>'
+    '<div class="card" id="preview-card" style="display:none">'
+    '<div class="card-label">2 &nbsp; Preview <span style="font-weight:400;text-transform:none;color:#4a5568">&nbsp;first 5 rows</span></div>'
+    '<div class="preview-wrap"><div id="preview-body"></div></div>'
+    '<div class="row-count" id="row-count"></div>'
+    '</div>'
+    '<div class="actions">'
+    '<button class="btn btn-primary" id="up-btn" onclick="doUpload()" disabled>Load into DataFabrik</button>'
+    '<div id="status"></div>'
+    '</div>'
+    '</div>'
+    '<script>'
+    'let file=null,totalRows=0;'
+    'const dz=document.getElementById("dz");'
+    'dz.addEventListener("dragover",e=>{e.preventDefault();dz.classList.add("drag")});'
+    'dz.addEventListener("dragleave",()=>dz.classList.remove("drag"));'
+    'dz.addEventListener("drop",e=>{e.preventDefault();dz.classList.remove("drag");'
+    'const f=e.dataTransfer.files[0];if(f&&f.name.endsWith(".csv")){applyFile(f);}});'
+    'function onFile(inp){if(inp.files[0])applyFile(inp.files[0]);}'
+    'function applyFile(f){'
+    'file=f;'
+    'document.getElementById("dz-idle").style.display="none";'
+    'document.getElementById("dz-done").style.display="";'
+    'document.getElementById("dz-fname").textContent=f.name;'
+    'document.getElementById("dz-fsize").textContent=(f.size/1024).toFixed(1)+" KB";'
+    'dz.classList.add("done");'
+    'const stem=f.name.replace(/\\.csv$/i,"").replace(/[^a-z0-9]+/gi,"_").toLowerCase();'
+    'const inp=document.getElementById("tbl-input");'
+    'if(!inp.value)inp.value=stem;'
+    'preview();checkReady();}'
+    'function checkReady(){'
+    'const t=document.getElementById("tbl-input").value.trim();'
+    'document.getElementById("up-btn").disabled=!(file&&t);}'
+    'async function preview(){'
+    'const txt=await file.text();'
+    'const lines=txt.trim().split("\\n");'
+    'totalRows=lines.length-1;'
+    'const preview=lines.slice(0,6);'
+    'const hdrs=preview[0].split(",");'
+    'let h=\'<table class="preview-tbl"><thead><tr>\';'
+    'hdrs.forEach(c=>h+=\'<th>\'+c.trim()+\'</th>\');'
+    'h+=\'</tr></thead><tbody>\';'
+    'preview.slice(1).forEach(ln=>{'
+    'h+=\'<tr>\';ln.split(",").forEach(v=>h+=\'<td>\'+v.trim()+\'</td>\');h+=\'</tr>\';});'
+    'h+=\'</tbody></table>\';'
+    'document.getElementById("preview-body").innerHTML=h;'
+    'document.getElementById("row-count").textContent=totalRows+" rows total · "+hdrs.length+" columns";'
+    'document.getElementById("preview-card").style.display="";}'
+    'async function doUpload(){'
+    'const tbl=document.getElementById("tbl-input").value.trim();'
+    'const btn=document.getElementById("up-btn");'
+    'const st=document.getElementById("status");'
+    'btn.disabled=true;'
+    'st.innerHTML=\'<div class="spin-wrap"><div class="spinner"></div>&nbsp;Loading…</div>\';'
+    'const fd=new FormData();fd.append("table",tbl);fd.append("file",file);'
+    'try{'
+    'const r=await fetch("/api/upload/csv",{method:"POST",body:fd});'
+    'const j=await r.json();'
+    'if(r.ok){'
+    'st.innerHTML=\'<span class="result-ok">✓ \'+j.rows_loaded+\' rows → raw.\'+j.table_name+\'</span>\';'
+    '}else{'
+    'st.innerHTML=\'<span class="result-err">✗ \'+(j.detail||"Upload failed")+\'</span>\';'
+    'btn.disabled=false;}'
+    '}catch(e){'
+    'st.innerHTML=\'<span class="result-err">✗ Network error</span>\';'
+    'btn.disabled=false;}}'
+    '</script></body></html>'
+)
+
+
+@app.post("/api/upload/csv")
+async def api_upload_csv(table: str = Form(...), file: UploadFile = File(...)) -> dict:
+    table_name = _safe_name(table)
+    if not table_name:
+        raise HTTPException(status_code=400, detail="Invalid table name")
+    content = await file.read()
+    reader = csv.DictReader(io.StringIO(content.decode("utf-8-sig")))
+    rows = list(reader)
+    if not rows:
+        raise HTTPException(status_code=400, detail="CSV has no data rows")
+    cols = [_safe_name(c) for c in (reader.fieldnames or [])]
+    if not cols:
+        raise HTTPException(status_code=400, detail="Could not detect column headers")
+    col_defs = ", ".join(f'"{c}" TEXT' for c in cols)
+    col_list = ", ".join(f'"{c}"' for c in cols)
+    placeholders = ", ".join(f":{c}" for c in cols)
+    with engine.begin() as conn:
+        conn.execute(text("CREATE SCHEMA IF NOT EXISTS raw"))
+        conn.execute(text(f'DROP TABLE IF EXISTS raw."{table_name}"'))
+        conn.execute(text(
+            f'CREATE TABLE raw."{table_name}" ({col_defs}, '
+            f'uploaded_at TIMESTAMPTZ DEFAULT now())'
+        ))
+        for row in rows:
+            data = {_safe_name(k): (v or "").strip() or None for k, v in row.items()}
+            conn.execute(text(f'INSERT INTO raw."{table_name}" ({col_list}) VALUES ({placeholders})'), data)
+    return {"table_name": table_name, "rows_loaded": len(rows), "columns": cols}
+
+
+@app.get("/upload", response_class=HTMLResponse)
+def upload_page() -> str:
+    """Demo data upload UI."""
+    return _UPLOAD_HTML
 
 
 @app.get("/", response_class=HTMLResponse)
