@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import requests as _requests
+import yaml
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 from sqlalchemy import create_engine, text
 
 app = FastAPI(title="DataFabrik API", version="0.1.0")
@@ -342,6 +345,9 @@ select.form-control{cursor:pointer}
     <button class="nav-btn" onclick="nav('builder')" id="nav-builder">
       <span class="icon">🔧</span> Pipeline Builder
     </button>
+    <a class="nav-btn" href="/onboard" target="_blank" style="text-decoration:none">
+      <span class="icon">🚀</span> Onboard Customer
+    </a>
   </div>
   <div class="sb-footer">Local Development</div>
 </nav>
@@ -369,6 +375,7 @@ select.form-control{cursor:pointer}
         <a class="qlink" href="http://localhost:3000" target="_blank"><span class="ql-icon">📊</span> Metabase ↗</a>
         <a class="qlink" href="http://localhost:9001" target="_blank"><span class="ql-icon">🗄️</span> MinIO ↗</a>
         <a class="qlink" href="/dashboard" target="_blank"><span class="ql-icon">🖥️</span> Health Dashboard ↗</a>
+        <a class="qlink" href="/onboard" target="_blank"><span class="ql-icon">🚀</span> Onboard Customer ↗</a>
       </div>
       <h3 style="font-size:.85rem;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px">Recent Runs</h3>
       <div id="home-runs"><div class="loading"><span class="spinner"></span> Loading…</div></div>
@@ -894,6 +901,456 @@ loadHome();
 </script>
 </body>
 </html>'''
+
+
+# ── Onboarding API ───────────────────────────────────────────────────────────
+
+_CONFIGS_DIR = Path("/app/configs/pipelines")
+
+class _OnboardPayload(BaseModel):
+    yaml_content: str
+
+
+def _validate_config(data: dict) -> list[dict]:
+    """Return [{field, message}] for every schema violation found."""
+    errors: list[dict] = []
+
+    pid = str(data.get("pipeline_id", ""))
+    if not pid:
+        errors.append({"field": "pipeline_id", "message": "Required"})
+    elif not all(c.isalnum() or c in "_-" for c in pid):
+        errors.append({"field": "pipeline_id",
+                        "message": "Only letters, numbers, underscores, and dashes allowed"})
+
+    stages = data.get("stages")
+    if not isinstance(stages, dict):
+        errors.append({"field": "stages", "message": "Required — must contain at least an ingestion block"})
+        return errors
+
+    ingestion = stages.get("ingestion")
+    if not isinstance(ingestion, dict):
+        errors.append({"field": "stages.ingestion", "message": "Required — every pipeline needs a source"})
+    else:
+        src_type = ingestion.get("type")
+        valid_src = {"jdbc", "http_api", "s3_csv"}
+        if src_type not in valid_src:
+            errors.append({"field": "stages.ingestion.type",
+                            "message": f"Must be one of: {', '.join(sorted(valid_src))}. Got '{src_type}'"})
+        elif src_type == "jdbc":
+            for f in ("connection_id", "query", "dest_key"):
+                if not ingestion.get(f):
+                    errors.append({"field": f"stages.ingestion.{f}", "message": "Required for JDBC source"})
+        elif src_type == "http_api":
+            for f in ("url", "dest_key"):
+                if not ingestion.get(f):
+                    errors.append({"field": f"stages.ingestion.{f}", "message": "Required for HTTP API source"})
+        elif src_type == "s3_csv":
+            for f in ("source_bucket", "source_key"):
+                if not ingestion.get(f):
+                    errors.append({"field": f"stages.ingestion.{f}", "message": "Required for S3 CSV source"})
+
+    transform = stages.get("transformation")
+    if transform is not None:
+        if not isinstance(transform, dict):
+            errors.append({"field": "stages.transformation", "message": "Must be a mapping"})
+        else:
+            t_type = transform.get("type")
+            if t_type not in ("dbt", "sql", "spark"):
+                errors.append({"field": "stages.transformation.type",
+                                "message": "Must be one of: dbt, sql, spark"})
+            elif t_type == "sql":
+                for f in ("connection_id", "sql_file"):
+                    if not transform.get(f):
+                        errors.append({"field": f"stages.transformation.{f}",
+                                        "message": "Required for SQL transform"})
+
+    schedule = data.get("schedule")
+    if schedule is not None:
+        if not isinstance(schedule, dict):
+            errors.append({"field": "schedule", "message": "Must be a mapping"})
+        else:
+            if schedule.get("cron") and schedule.get("preset"):
+                errors.append({"field": "schedule",
+                                "message": "Specify cron or preset — not both"})
+            if not schedule.get("start_date"):
+                errors.append({"field": "schedule.start_date", "message": "Required"})
+
+    return errors
+
+
+@app.post("/api/onboard/validate")
+def api_onboard_validate(payload: _OnboardPayload) -> dict:
+    """Parse and validate a pipeline YAML string; return field-level errors."""
+    try:
+        data = yaml.safe_load(payload.yaml_content)
+        if not isinstance(data, dict):
+            return {"valid": False, "errors": [{"field": "root", "message": "Config must be a YAML mapping"}],
+                    "pipeline_id": None}
+    except yaml.YAMLError as exc:
+        return {"valid": False, "errors": [{"field": "root", "message": f"Invalid YAML: {exc}"}],
+                "pipeline_id": None}
+
+    errors = _validate_config(data)
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "pipeline_id": data.get("pipeline_id") if not errors else None,
+    }
+
+
+@app.post("/api/onboard/submit")
+def api_onboard_submit(payload: _OnboardPayload) -> dict:
+    """Validate then write the pipeline config; Airflow picks it up within 30 s."""
+    result = api_onboard_validate(payload)
+    if not result["valid"]:
+        return result
+
+    pipeline_id = result["pipeline_id"]
+    _CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
+    config_path = _CONFIGS_DIR / f"{pipeline_id}.yaml"
+    config_path.write_text(payload.yaml_content)
+
+    return {
+        "valid": True,
+        "errors": [],
+        "pipeline_id": pipeline_id,
+        "message": f"Pipeline '{pipeline_id}' registered. Airflow will load it within ~30 seconds.",
+    }
+
+
+# ── Onboarding page HTML ──────────────────────────────────────────────────────
+
+_TMPL_JDBC = """pipeline_id: my_pipeline_daily
+description: Load data from database daily
+owner: data-platform
+tags: [myteam]
+
+schedule:
+  preset: "@daily"
+  start_date: "2026-01-01T00:00:00"
+
+stages:
+  ingestion:
+    type: jdbc
+    connection_id: my_connection_id
+    query: "SELECT * FROM my_table WHERE updated_at > '{{ ds }}'"
+    dest_key: my_pipeline/{{ ds }}.parquet
+  transformation:
+    type: dbt
+    select: stg_my_pipeline_daily"""
+
+_TMPL_HTTP = """pipeline_id: my_api_pipeline
+description: Fetch data from REST API daily
+owner: data-platform
+tags: [api]
+
+schedule:
+  preset: "@daily"
+  start_date: "2026-01-01T00:00:00"
+
+stages:
+  ingestion:
+    type: http_api
+    url: https://api.example.com/v1/data
+    method: GET
+    dest_key: my_api/{{ ds_nodash }}.json
+  transformation:
+    type: dbt
+    select: stg_my_api_pipeline"""
+
+_TMPL_S3 = """pipeline_id: my_csv_pipeline
+description: Load CSV files from S3 daily
+owner: data-platform
+tags: [csv]
+
+schedule:
+  preset: "@daily"
+  start_date: "2026-01-01T00:00:00"
+
+stages:
+  ingestion:
+    type: s3_csv
+    source_bucket: customer-landing
+    source_key: my-folder/*.csv
+  transformation:
+    type: dbt
+    select: stg_my_csv_pipeline"""
+
+_ONBOARD_HTML = (
+    '<!DOCTYPE html><html lang="en"><head>'
+    '<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+    '<title>DataFabrik — Pipeline Onboarding</title>'
+    '<style>'
+    '*{box-sizing:border-box;margin:0;padding:0}'
+    'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;'
+    'background:#0f1117;color:#e2e8f0;min-height:100vh}'
+    '.topbar{background:#1a1f2e;border-bottom:1px solid #2d3748;padding:14px 32px;'
+    'display:flex;align-items:center;gap:14px}'
+    '.logo{width:28px;height:28px;background:#3182ce;border-radius:6px;'
+    'display:flex;align-items:center;justify-content:center;flex-shrink:0}'
+    '.logo svg{width:16px;height:16px}'
+    '.topbar h1{font-size:1rem;font-weight:700}'
+    '.topbar a{margin-left:auto;font-size:.8rem;color:#63b3ed;text-decoration:none}'
+    '.topbar a:hover{text-decoration:underline}'
+    '.page{max-width:780px;margin:0 auto;padding:36px 24px}'
+    '.hero{margin-bottom:36px}'
+    '.hero h2{font-size:1.6rem;font-weight:700;margin-bottom:8px}'
+    '.hero p{color:#a0aec0;font-size:.95rem;line-height:1.6}'
+    '.steps{display:flex;gap:0;margin-bottom:36px}'
+    '.step{display:flex;align-items:center;gap:8px;font-size:.8rem;color:#4a5568;flex:1}'
+    '.step.done{color:#48bb78}.step.active{color:#63b3ed;font-weight:600}'
+    '.step-num{width:22px;height:22px;border-radius:50%;background:#2d3748;'
+    'display:flex;align-items:center;justify-content:center;font-size:.72rem;'
+    'font-weight:700;flex-shrink:0}'
+    '.step.done .step-num{background:#276749;color:#9ae6b4}'
+    '.step.active .step-num{background:#2b4c7e;color:#90cdf4}'
+    '.step-sep{flex:1;height:1px;background:#2d3748;margin:0 8px;max-width:40px}'
+    '.card{background:#1a1f2e;border:1px solid #2d3748;border-radius:12px;'
+    'padding:24px;margin-bottom:20px}'
+    '.card h3{font-size:.85rem;font-weight:700;text-transform:uppercase;'
+    'letter-spacing:.5px;color:#718096;margin-bottom:16px;'
+    'display:flex;align-items:center;gap:8px}'
+    '.tmpl-row{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}'
+    '.tmpl-btn{background:#2d3748;border:1px solid #3a4459;color:#a0aec0;'
+    'border-radius:6px;padding:6px 14px;font-size:.8rem;cursor:pointer;'
+    'transition:background .15s,color .15s,border-color .15s}'
+    '.tmpl-btn:hover,.tmpl-btn.sel{background:#2b4c7e;border-color:#3182ce;color:#90cdf4}'
+    '.drop-zone{border:2px dashed #2d3748;border-radius:8px;padding:20px;'
+    'text-align:center;cursor:pointer;margin-bottom:12px;'
+    'transition:border-color .15s,background .15s;font-size:.85rem;color:#4a5568}'
+    '.drop-zone:hover,.drop-zone.drag{border-color:#3182ce;background:#0d1627}'
+    '.drop-zone input{display:none}'
+    'textarea{width:100%;background:#0d1117;border:1px solid #2d3748;border-radius:8px;'
+    'padding:14px;color:#e2e8f0;font-family:"JetBrains Mono","Fira Code",monospace;'
+    'font-size:.8rem;line-height:1.6;resize:vertical;outline:none;'
+    'transition:border-color .15s}'
+    'textarea:focus{border-color:#3182ce}'
+    '.actions{display:flex;gap:12px;align-items:center;margin-top:4px}'
+    '.btn{display:inline-flex;align-items:center;gap:6px;padding:10px 20px;'
+    'border-radius:8px;font-size:.875rem;font-weight:600;cursor:pointer;'
+    'border:none;transition:opacity .15s,background .15s}'
+    '.btn:disabled{opacity:.4;cursor:not-allowed}'
+    '.btn-primary{background:#3182ce;color:#fff}.btn-primary:hover:not(:disabled){background:#2b6cb0}'
+    '.btn-success{background:#276749;color:#9ae6b4}'
+    '.btn-success:hover:not(:disabled){background:#22543d}'
+    '.btn-ghost{background:#2d3748;color:#e2e8f0}'
+    '.btn-ghost:hover:not(:disabled){background:#3a4459}'
+    '.spin-wrap{display:flex;align-items:center;gap:8px;font-size:.85rem;color:#718096}'
+    '.spinner{width:14px;height:14px;border:2px solid #2d3748;'
+    'border-top-color:#63b3ed;border-radius:50%;animation:spin .6s linear infinite}'
+    '@keyframes spin{to{transform:rotate(360deg)}}'
+    '.val-list{list-style:none;display:flex;flex-direction:column;gap:8px}'
+    '.val-item{display:flex;align-items:flex-start;gap:10px;'
+    'background:#151a27;border-radius:6px;padding:10px 14px}'
+    '.val-item.ok{border-left:3px solid #48bb78}'
+    '.val-item.err{border-left:3px solid #fc8181}'
+    '.val-icon{font-size:1rem;flex-shrink:0;margin-top:1px}'
+    '.val-field{font-size:.75rem;font-family:monospace;font-weight:600;'
+    'color:#a0aec0;margin-bottom:2px}'
+    '.val-msg{font-size:.8rem;color:#718096}'
+    '.val-item.err .val-msg{color:#fc8181}'
+    '.summary-ok{display:flex;align-items:center;gap:10px;'
+    'background:#1a2e1a;border:1px solid #276749;border-radius:8px;'
+    'padding:14px 18px;font-size:.9rem;color:#9ae6b4;font-weight:600}'
+    '.summary-err{display:flex;align-items:center;gap:10px;'
+    'background:#2e1a1a;border:1px solid #742a2a;border-radius:8px;'
+    'padding:14px 18px;font-size:.9rem;color:#fc8181;font-weight:600}'
+    '.success-box{background:#1a2e1a;border:1px solid #276749;border-radius:12px;'
+    'padding:28px;text-align:center}'
+    '.success-box .tick{font-size:2.5rem;margin-bottom:12px}'
+    '.success-box h3{font-size:1.1rem;font-weight:700;color:#9ae6b4;margin-bottom:8px}'
+    '.success-box p{font-size:.875rem;color:#68d391;line-height:1.6}'
+    '.next-steps{margin-top:16px;text-align:left;'
+    'background:#151a27;border-radius:8px;padding:14px 18px}'
+    '.next-steps h4{font-size:.75rem;text-transform:uppercase;letter-spacing:.5px;'
+    'color:#4a5568;margin-bottom:10px}'
+    '.next-step{font-size:.85rem;color:#a0aec0;padding:5px 0;'
+    'border-bottom:1px solid #1e2535;display:flex;align-items:center;gap:8px}'
+    '.next-step:last-child{border-bottom:none}'
+    '.next-step a{color:#63b3ed;text-decoration:none}'
+    '.next-step a:hover{text-decoration:underline}'
+    '.hidden{display:none}'
+    '</style></head><body>'
+    '<div class="topbar">'
+    '<div class="logo"><svg viewBox="0 0 16 16" fill="none">'
+    '<rect width="16" height="16" rx="3" fill="#3182ce"/>'
+    '<path d="M4 8h8M8 4v8" stroke="white" stroke-width="1.8" stroke-linecap="round"/>'
+    '</svg></div>'
+    '<h1>DataFabrik</h1>'
+    '<span style="color:#4a5568;font-size:.85rem">Pipeline Onboarding</span>'
+    '<a href="/">← Back to portal</a>'
+    '</div>'
+    '<div class="page">'
+    '<div class="hero">'
+    '<h2>Connect your data source</h2>'
+    '<p>Paste or upload your pipeline configuration below. We\'ll validate it and '
+    'register it with the platform automatically.</p>'
+    '</div>'
+    '<div class="steps" id="steps">'
+    '<div class="step active" id="step1"><div class="step-num">1</div> Configure</div>'
+    '<div class="step-sep"></div>'
+    '<div class="step" id="step2"><div class="step-num">2</div> Validate</div>'
+    '<div class="step-sep"></div>'
+    '<div class="step" id="step3"><div class="step-num">3</div> Register</div>'
+    '</div>'
+    '<div class="card" id="card-configure">'
+    '<h3>① Source configuration</h3>'
+    '<div class="tmpl-row">'
+    '<button class="tmpl-btn sel" id="tmpl-jdbc" onclick="useTemplate(\'jdbc\')">🔌 JDBC / Database</button>'
+    '<button class="tmpl-btn" id="tmpl-http" onclick="useTemplate(\'http\')">🌐 REST API</button>'
+    '<button class="tmpl-btn" id="tmpl-s3" onclick="useTemplate(\'s3\')">📦 S3 CSV</button>'
+    '<button class="tmpl-btn" id="tmpl-blank" onclick="useTemplate(\'blank\')">✏️ Start blank</button>'
+    '</div>'
+    '<div class="drop-zone" id="drop-zone" '
+    'ondragover="event.preventDefault();this.classList.add(\'drag\')" '
+    'ondragleave="this.classList.remove(\'drag\')" '
+    'ondrop="handleDrop(event)">'
+    '<input type="file" id="file-input" accept=".yaml,.yml,.json" onchange="handleFile(this)">'
+    'Drop a <strong>.yaml</strong> file here, or '
+    '<span style="color:#63b3ed;cursor:pointer" onclick="document.getElementById(\'file-input\').click()">'
+    'browse to upload</span>'
+    '</div>'
+    '<textarea id="yaml-editor" rows="18" spellcheck="false" '
+    'placeholder="Paste your pipeline YAML config here..." '
+    'oninput="onEdit()"></textarea>'
+    '</div>'
+    '<div class="card hidden" id="card-validation">'
+    '<h3>② Validation results</h3>'
+    '<div id="val-summary"></div>'
+    '<ul class="val-list" id="val-list" style="margin-top:14px"></ul>'
+    '</div>'
+    '<div class="actions">'
+    '<button class="btn btn-primary" id="btn-validate" onclick="doValidate()">🔍 Validate config</button>'
+    '<button class="btn btn-success hidden" id="btn-register" onclick="doRegister()">🚀 Register pipeline</button>'
+    '<div class="spin-wrap hidden" id="spinner"><div class="spinner"></div> Working…</div>'
+    '</div>'
+    '<div class="hidden" id="card-success" style="margin-top:24px">'
+    '<div class="success-box">'
+    '<div class="tick">✅</div>'
+    '<h3 id="success-title">Pipeline registered!</h3>'
+    '<p id="success-msg"></p>'
+    '<div class="next-steps">'
+    '<h4>Next steps</h4>'
+    '<div class="next-step">① '
+    '<a href="http://localhost:8080" target="_blank">Open Airflow ↗</a>'
+    ' — your DAG will appear within ~30 seconds</div>'
+    '<div class="next-step">② Add dbt models under '
+    '<code style="background:#2d3748;padding:1px 6px;border-radius:4px">'
+    'dbt/datafabrik_models/models/&lt;pipeline_id&gt;/</code></div>'
+    '<div class="next-step">③ Trigger a test run from the '
+    '<a href="/" target="_blank">portal Pipelines tab ↗</a></div>'
+    '</div>'
+    '</div>'
+    '</div>'
+    '</div>'
+    '<script>'
+    'const TMPLS={'
+    'jdbc:' + repr(_TMPL_JDBC) + ','
+    'http:' + repr(_TMPL_HTTP) + ','
+    's3:'   + repr(_TMPL_S3)   + ','
+    'blank:""'
+    '};'
+    'let lastValid=false;'
+    'function useTemplate(t){'
+    '  document.getElementById("yaml-editor").value=TMPLS[t];'
+    '  ["jdbc","http","s3","blank"].forEach(k=>{'
+    '    document.getElementById("tmpl-"+k).classList.toggle("sel",k===t);'
+    '  });'
+    '  onEdit();'
+    '}'
+    'function onEdit(){'
+    '  lastValid=false;'
+    '  document.getElementById("btn-register").classList.add("hidden");'
+    '  document.getElementById("card-success").classList.add("hidden");'
+    '  setStep(1);'
+    '}'
+    'function handleDrop(e){'
+    '  e.preventDefault();'
+    '  document.getElementById("drop-zone").classList.remove("drag");'
+    '  const f=e.dataTransfer.files[0];'
+    '  if(f) readFile(f);'
+    '}'
+    'function handleFile(inp){if(inp.files[0]) readFile(inp.files[0]);}'
+    'function readFile(f){'
+    '  const r=new FileReader();'
+    '  r.onload=e=>{document.getElementById("yaml-editor").value=e.target.result;onEdit();};'
+    '  r.readAsText(f);'
+    '}'
+    'function setStep(n){'
+    '  [1,2,3].forEach(i=>{'
+    '    const el=document.getElementById("step"+i);'
+    '    el.className="step"+(i<n?" done":i===n?" active":"");'
+    '  });'
+    '}'
+    'function showSpinner(v){'
+    '  document.getElementById("spinner").classList.toggle("hidden",!v);'
+    '  document.getElementById("btn-validate").disabled=v;'
+    '}'
+    'async function doValidate(){'
+    '  const yaml=document.getElementById("yaml-editor").value.trim();'
+    '  if(!yaml){alert("Please enter or upload a pipeline config first.");return;}'
+    '  showSpinner(true);'
+    '  document.getElementById("card-success").classList.add("hidden");'
+    '  try{'
+    '    const r=await fetch("/api/onboard/validate",{'
+    '      method:"POST",headers:{"Content-Type":"application/json"},'
+    '      body:JSON.stringify({yaml_content:yaml})'
+    '    });'
+    '    const d=await r.json();'
+    '    renderValidation(d);'
+    '  } catch(e){alert("Request failed: "+e.message);}'
+    '  finally{showSpinner(false);}'
+    '}'
+    'function renderValidation(d){'
+    '  const valCard=document.getElementById("card-validation");'
+    '  const sumEl=document.getElementById("val-summary");'
+    '  const listEl=document.getElementById("val-list");'
+    '  valCard.classList.remove("hidden");'
+    '  setStep(2);'
+    '  if(d.valid){'
+    '    sumEl.innerHTML=\'<div class="summary-ok">✓ &nbsp;Configuration is valid — ready to register</div>\';'
+    '    listEl.innerHTML=\'<li class="val-item ok"><span class="val-icon">✓</span><div><div class="val-field">pipeline_id</div><div class="val-msg">\'+d.pipeline_id+\'</div></div></li>\';'
+    '    document.getElementById("btn-register").classList.remove("hidden");'
+    '    lastValid=true;'
+    '  } else {'
+    '    const cnt=d.errors.length;'
+    '    sumEl.innerHTML=\'<div class="summary-err">✗ &nbsp;\'+cnt+\' issue\'+(cnt>1?"s":"")+" found — fix before registering</div>";'
+    '    listEl.innerHTML=d.errors.map(e=>\'<li class="val-item err"><span class="val-icon">✗</span><div><div class="val-field">\'+e.field+\'</div><div class="val-msg">\'+e.message+"</div></div></li>").join("");'
+    '    document.getElementById("btn-register").classList.add("hidden");'
+    '    lastValid=false;'
+    '  }'
+    '}'
+    'async function doRegister(){'
+    '  const yaml=document.getElementById("yaml-editor").value.trim();'
+    '  showSpinner(true);'
+    '  document.getElementById("btn-register").disabled=true;'
+    '  try{'
+    '    const r=await fetch("/api/onboard/submit",{'
+    '      method:"POST",headers:{"Content-Type":"application/json"},'
+    '      body:JSON.stringify({yaml_content:yaml})'
+    '    });'
+    '    const d=await r.json();'
+    '    if(d.valid){'
+    '      setStep(3);'
+    '      document.getElementById("success-title").textContent="Pipeline \\""+d.pipeline_id+"\\" registered!";'
+    '      document.getElementById("success-msg").textContent=d.message;'
+    '      document.getElementById("card-success").classList.remove("hidden");'
+    '      document.getElementById("btn-register").classList.add("hidden");'
+    '    } else {'
+    '      renderValidation(d);'
+    '    }'
+    '  } catch(e){alert("Request failed: "+e.message);}'
+    '  finally{showSpinner(false);document.getElementById("btn-register").disabled=false;}'
+    '}'
+    'useTemplate("jdbc");'
+    '</script></body></html>'
+)
+
+
+@app.get("/onboard", response_class=HTMLResponse)
+def onboard() -> str:
+    """Customer pipeline onboarding UI."""
+    return _ONBOARD_HTML
 
 
 @app.get("/", response_class=HTMLResponse)

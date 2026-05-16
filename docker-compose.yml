@@ -169,6 +169,7 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
+      - ./orchestration/airflow/configs:/app/configs
     environment:
       DATABASE_URL: postgresql+psycopg2://datafabrik:datafabrik@postgres:5432/datafabrik
       S3_ENDPOINT_URL: http://minio:9000
