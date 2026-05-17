@@ -520,15 +520,15 @@ select.form-control{cursor:pointer}
     <button class="nav-btn" onclick="nav('builder')" id="nav-builder">
       <span class="icon">🔧</span> Pipeline Builder
     </button>
-    <a class="nav-btn" href="/onboard" target="_blank" style="text-decoration:none">
+    <button class="nav-btn" onclick="nav('onboard')" id="nav-onboard">
       <span class="icon">🚀</span> Onboard Customer
-    </a>
-    <a class="nav-btn" href="/upload" target="_blank" style="text-decoration:none">
+    </button>
+    <button class="nav-btn" onclick="nav('upload')" id="nav-upload">
       <span class="icon">📤</span> Upload Data
-    </a>
-    <a class="nav-btn" href="/workflow" target="_blank" style="text-decoration:none">
+    </button>
+    <button class="nav-btn" onclick="nav('workflow')" id="nav-workflow">
       <span class="icon">🧹</span> Cleaning Pipeline
-    </a>
+    </button>
   </div>
   <div class="sb-footer">Local Development</div>
 </nav>
@@ -567,7 +567,7 @@ select.form-control{cursor:pointer}
         <a class="qlink" href="http://localhost:3000" target="_blank"><span class="ql-icon">📊</span> Metabase ↗</a>
         <a class="qlink" href="http://localhost:9001" target="_blank"><span class="ql-icon">🗄️</span> MinIO ↗</a>
         <a class="qlink" href="/dashboard" target="_blank"><span class="ql-icon">🖥️</span> Health Dashboard ↗</a>
-        <a class="qlink" href="/onboard" target="_blank"><span class="ql-icon">🚀</span> Onboard Customer ↗</a>
+        <a class="qlink" href="#" onclick="nav('onboard');return false"><span class="ql-icon">🚀</span> Onboard Customer</a>
       </div>
       <h3 style="font-size:.85rem;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px">Recent Runs</h3>
       <div id="home-runs"><div class="loading"><span class="spinner"></span> Loading…</div></div>
@@ -775,13 +775,44 @@ select.form-control{cursor:pointer}
     </div>
   </div>
 
+  <!-- ONBOARD CUSTOMER -->
+  <div id="sec-onboard" class="section iframe-section">
+    <div class="iframe-bar">
+      <span>🚀 Onboard Customer — register a new data pipeline</span>
+    </div>
+    <div class="iframe-wrap">
+      <iframe id="frame-onboard" title="Onboard Customer" allowfullscreen></iframe>
+    </div>
+  </div>
+
+  <!-- UPLOAD DATA -->
+  <div id="sec-upload" class="section iframe-section">
+    <div class="iframe-bar">
+      <span>📤 Upload Data — load a CSV into Postgres</span>
+    </div>
+    <div class="iframe-wrap">
+      <iframe id="frame-upload" title="Upload Data" allowfullscreen></iframe>
+    </div>
+  </div>
+
+  <!-- CLEANING PIPELINE -->
+  <div id="sec-workflow" class="section iframe-section">
+    <div class="iframe-bar">
+      <span>🧹 Cleaning Pipeline — wizard to clean and standardise data</span>
+    </div>
+    <div class="iframe-wrap">
+      <iframe id="frame-workflow" title="Cleaning Pipeline" allowfullscreen></iframe>
+    </div>
+  </div>
+
 </main>
 </div>
 
 <script>
 // ── Navigation ──────────────────────────────────────────────────────────
-const SECTIONS = ['home','pipelines','airflow','metabase','minio','builder'];
-const IFRAMES  = {airflow:'/tools/airflow', metabase:'http://localhost:3001', minio:'http://localhost:9002'};
+const SECTIONS = ['home','pipelines','airflow','metabase','minio','builder','onboard','upload','workflow'];
+const IFRAMES  = {airflow:'/tools/airflow', metabase:'http://localhost:3001', minio:'http://localhost:9002',
+                  onboard:'/onboard', upload:'/upload', workflow:'/workflow'};
 // Airflow is proxied via nginx on :8082 which strips X-Frame-Options
 const iframeLoaded = {};
 
