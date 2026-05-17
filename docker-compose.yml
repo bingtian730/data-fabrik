@@ -170,6 +170,7 @@ services:
     volumes:
       - ./backend:/app
       - ./orchestration/airflow/configs:/app/configs
+      - ./dbt/datafabrik_models/models:/app/dbt_models
     environment:
       DATABASE_URL: postgresql+psycopg2://datafabrik:datafabrik@postgres:5432/datafabrik
       S3_ENDPOINT_URL: http://minio:9000

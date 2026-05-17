@@ -355,6 +355,9 @@ select.form-control{cursor:pointer}
     <a class="nav-btn" href="/upload" target="_blank" style="text-decoration:none">
       <span class="icon">📤</span> Upload Data
     </a>
+    <a class="nav-btn" href="/workflow" target="_blank" style="text-decoration:none">
+      <span class="icon">🧹</span> Cleaning Pipeline
+    </a>
   </div>
   <div class="sb-footer">Local Development</div>
 </nav>
@@ -916,7 +919,8 @@ loadHome();
 
 # ── Onboarding API ───────────────────────────────────────────────────────────
 
-_CONFIGS_DIR = Path("/app/configs/pipelines")
+_CONFIGS_DIR    = Path("/app/configs/pipelines")
+_DBT_MODELS_DIR = Path("/app/dbt_models")
 
 class _OnboardPayload(BaseModel):
     yaml_content: str
@@ -1373,6 +1377,452 @@ def onboard() -> str:
 def _safe_name(s: str) -> str:
     """Lowercase and replace non-alphanumeric chars with underscores."""
     return re.sub(r"[^a-z0-9_]", "_", s.lower().strip()).strip("_") or "col"
+
+
+# ── Workflow: data cleaning pipeline ─────────────────────────────────────────
+
+_VALID_TYPES = {"TEXT", "INTEGER", "NUMERIC", "DATE", "TIMESTAMP", "BOOLEAN"}
+_VALID_OPS   = {"=", "!=", ">", ">=", "<", "<=", "LIKE", "IS NULL", "IS NOT NULL"}
+
+
+def _infer_type(values: list[str]) -> str:
+    nz = [v.strip() for v in values if v and v.strip()]
+    if not nz:
+        return "TEXT"
+    if all(re.match(r"^-?\d+$", v) for v in nz):
+        return "INTEGER"
+    if all(re.match(r"^-?\d+\.?\d*$", v) for v in nz):
+        return "NUMERIC"
+    if all(re.match(r"^\d{4}-\d{2}-\d{2}$", v) for v in nz):
+        return "DATE"
+    if all(re.match(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}", v) for v in nz):
+        return "TIMESTAMP"
+    if all(v.lower() in ("true", "false", "1", "0", "yes", "no") for v in nz):
+        return "BOOLEAN"
+    return "TEXT"
+
+
+def _generate_clean_sql(table: str, columns: list, filters: list) -> str:
+    select_parts = []
+    for col in columns:
+        if not col.get("include", True):
+            continue
+        src  = col["name"]
+        out  = col.get("output_name") or src
+        dtype = col.get("type", "TEXT")
+        if dtype not in _VALID_TYPES:
+            dtype = "TEXT"
+        if dtype == "TEXT":
+            expr = f'trim("{src}")'
+        elif dtype == "NUMERIC":
+            expr = f'round("{src}"::NUMERIC, 2)'
+        else:
+            expr = f'"{src}"::{dtype}'
+        select_parts.append(f'        {expr} AS "{out}"')
+
+    where_parts = []
+    for f in filters:
+        op  = f.get("operator", "=")
+        col = f.get("column", "")
+        val = f.get("value", "")
+        if op not in _VALID_OPS or not col:
+            continue
+        if op in ("IS NULL", "IS NOT NULL"):
+            where_parts.append(f'"{col}" {op}')
+        elif op == "LIKE":
+            where_parts.append(f'"{col}" LIKE \'%{val}%\'')
+        else:
+            where_parts.append(f'"{col}" {op} \'{val}\'')
+
+    select_str = ",\n".join(select_parts) or "        *"
+    where_str  = ""
+    if where_parts:
+        where_str = "    WHERE " + "\n      AND ".join(where_parts) + "\n"
+
+    return (
+        f'with source as (\n'
+        f'    select * from raw."{table}"\n'
+        f'),\n'
+        f'cleaned as (\n'
+        f'    select\n'
+        f'{select_str}\n'
+        f'    from source\n'
+        f'{where_str}'
+        f')\n'
+        f'select * from cleaned\n'
+    )
+
+
+class _ColConfig(BaseModel):
+    name: str
+    output_name: str = ""
+    type: str = "TEXT"
+    include: bool = True
+
+
+class _FilterConfig(BaseModel):
+    column: str
+    operator: str = "="
+    value: str = ""
+
+
+class _BuildCleanPayload(BaseModel):
+    table: str
+    columns: list[_ColConfig]
+    filters: list[_FilterConfig] = []
+
+
+@app.post("/api/workflow/upload")
+async def api_workflow_upload(table: str = Form(...), file: UploadFile = File(...)) -> dict:
+    table_name = _safe_name(table)
+    if not table_name:
+        raise HTTPException(status_code=400, detail="Invalid table name")
+    content = await file.read()
+    reader  = csv.DictReader(io.StringIO(content.decode("utf-8-sig")))
+    rows    = list(reader)
+    if not rows:
+        raise HTTPException(status_code=400, detail="CSV has no data rows")
+    fieldnames = list(reader.fieldnames or [])
+    samples: dict[str, list[str]] = {c: [] for c in fieldnames}
+    for row in rows[:50]:
+        for col in fieldnames:
+            v = (row.get(col) or "").strip()
+            if v and len(samples[col]) < 3:
+                samples[col].append(v)
+    columns = [
+        {"name": c.strip(), "type": _infer_type(samples[c]), "samples": samples[c]}
+        for c in fieldnames
+    ]
+    col_defs     = ", ".join(f'"{_safe_name(c)}" TEXT' for c in fieldnames)
+    col_list     = ", ".join(f'"{_safe_name(c)}"' for c in fieldnames)
+    placeholders = ", ".join(f":{_safe_name(c)}" for c in fieldnames)
+    with engine.begin() as conn:
+        conn.execute(text("CREATE SCHEMA IF NOT EXISTS raw"))
+        conn.execute(text(f'DROP TABLE IF EXISTS raw."{table_name}"'))
+        conn.execute(text(
+            f'CREATE TABLE raw."{table_name}" ({col_defs}, '
+            f'uploaded_at TIMESTAMPTZ DEFAULT now())'
+        ))
+        for row in rows:
+            data = {_safe_name(k): (v or "").strip() or None for k, v in row.items()}
+            conn.execute(text(f'INSERT INTO raw."{table_name}" ({col_list}) VALUES ({placeholders})'), data)
+    return {"table_name": table_name, "rows": len(rows), "columns": columns}
+
+
+@app.post("/api/workflow/build-clean")
+def api_build_clean(payload: _BuildCleanPayload) -> dict:
+    table = _safe_name(payload.table)
+    if not table:
+        raise HTTPException(status_code=400, detail="Invalid table name")
+    ts         = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    model_name = f"stg_clean_{table}_{ts}"
+    pipeline_id = f"clean_{table}_{ts}"
+    cols    = [c.model_dump() for c in payload.columns]
+    filters = [f.model_dump() for f in payload.filters]
+    sql = _generate_clean_sql(table, cols, filters)
+    model_dir = _DBT_MODELS_DIR / "acme"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / f"{model_name}.sql").write_text(sql)
+    pipeline_yaml = (
+        f"pipeline_id: {pipeline_id}\n"
+        f"description: Auto-generated cleaning pipeline for raw.{table}\n"
+        f"tags: [generated, cleaning, {table}]\n\n"
+        f"schedule:\n  preset: \"@daily\"\n  retries: 1\n\n"
+        f"stages:\n"
+        f"  ingestion:\n    type: jdbc\n    connection_id: acme_postgres\n    table: raw.{table}\n\n"
+        f"  transformation:\n    type: dbt\n    select: {model_name}\n\n"
+        f"  validation:\n"
+        f"    - type: row_count\n      connection_id: postgres_default\n"
+        f"      table: analytics.{model_name}\n      min_rows: 1\n"
+    )
+    _CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
+    (_CONFIGS_DIR / f"{pipeline_id}.yaml").write_text(pipeline_yaml)
+    return {
+        "pipeline_id": pipeline_id,
+        "model_name":  model_name,
+        "airflow_url": f"http://localhost:8080/dags/{pipeline_id}/grid",
+        "sql_preview": sql,
+    }
+
+
+_WORKFLOW_HTML = (
+    '<!DOCTYPE html><html lang="en"><head>'
+    '<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+    '<title>DataFabrik — Build Cleaning Pipeline</title>'
+    '<style>'
+    '*{box-sizing:border-box;margin:0;padding:0}'
+    'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh}'
+    '.topbar{background:#1a1f2e;border-bottom:1px solid #2d3748;padding:14px 32px;display:flex;align-items:center;gap:14px}'
+    '.logo{width:28px;height:28px;background:#3182ce;border-radius:6px;display:flex;align-items:center;justify-content:center}'
+    '.logo svg{width:16px;height:16px}'
+    '.topbar h1{font-size:1rem;font-weight:700}'
+    '.topbar a{margin-left:auto;font-size:.8rem;color:#63b3ed;text-decoration:none}'
+    '.page{max-width:820px;margin:0 auto;padding:32px 24px}'
+    '.stepper{display:flex;align-items:center;margin-bottom:36px}'
+    '.si{display:flex;align-items:center;gap:8px;font-size:.8rem;color:#4a5568}'
+    '.si.active{color:#63b3ed;font-weight:600}'
+    '.si.done{color:#48bb78}'
+    '.si-circle{width:24px;height:24px;border-radius:50%;background:#2d3748;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;flex-shrink:0}'
+    '.si.active .si-circle{background:#2b4c7e;color:#90cdf4}'
+    '.si.done .si-circle{background:#276749;color:#9ae6b4}'
+    '.si-sep{flex:1;height:1px;background:#2d3748;margin:0 12px}'
+    '.panel{display:none}.panel.active{display:block}'
+    '.panel-head{margin-bottom:28px}'
+    '.panel-head h2{font-size:1.4rem;font-weight:700;margin-bottom:6px}'
+    '.panel-head p{color:#a0aec0;font-size:.9rem;line-height:1.6}'
+    '.card{background:#1a1f2e;border:1px solid #2d3748;border-radius:12px;padding:24px;margin-bottom:20px}'
+    '.card-label{font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#718096;margin-bottom:14px;display:flex;align-items:center;gap:10px}'
+    '.drop-zone{border:2px dashed #2d3748;border-radius:10px;padding:40px 24px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;position:relative}'
+    '.drop-zone:hover,.drop-zone.drag{border-color:#3182ce;background:#0d1627}'
+    '.drop-zone.done{border-color:#48bb78;background:#0d1f14;border-style:solid}'
+    '.drop-zone input{position:absolute;inset:0;opacity:0;cursor:pointer}'
+    '.dz-icon{font-size:2rem;margin-bottom:10px;display:block}'
+    '.dz-main{font-size:.9rem;color:#a0aec0;margin-bottom:4px}'
+    '.dz-sub{font-size:.75rem;color:#4a5568}'
+    '.dz-name{font-size:1rem;font-weight:600;color:#68d391}'
+    '.field-row{display:flex;align-items:center;gap:10px;margin-top:14px}'
+    '.field-label{font-size:.8rem;color:#718096;white-space:nowrap;min-width:80px}'
+    '.field-prefix{font-size:.85rem;color:#4a5568}'
+    'input[type=text]{background:#0d1117;border:1px solid #2d3748;border-radius:6px;padding:8px 12px;color:#e2e8f0;font-size:.875rem;outline:none;flex:1;transition:border-color .15s}'
+    'input[type=text]:focus{border-color:#3182ce}'
+    '.source-bar{background:#151a27;border-radius:8px;padding:10px 16px;font-size:.82rem;color:#718096;margin-bottom:20px}'
+    '.source-bar b{color:#e2e8f0}'
+    '.section-title{font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#718096;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between}'
+    '.col-wrap{overflow-x:auto}'
+    '.col-tbl{width:100%;border-collapse:collapse;font-size:.8rem}'
+    '.col-tbl th{background:#232a3b;color:#4a5568;padding:7px 10px;text-align:left;border-bottom:1px solid #2d3748;white-space:nowrap;font-weight:600}'
+    '.col-tbl td{padding:6px 10px;border-bottom:1px solid #151a27;vertical-align:middle}'
+    '.col-tbl tr:last-child td{border-bottom:none}'
+    '.col-tbl input[type=checkbox]{width:15px;height:15px;cursor:pointer;accent-color:#3182ce}'
+    '.col-out{width:130px;background:#0d1117;border:1px solid #2d3748;border-radius:5px;padding:4px 8px;color:#e2e8f0;font-size:.78rem}'
+    '.col-out:focus{border-color:#3182ce;outline:none}'
+    'select.col-type{background:#0d1117;border:1px solid #2d3748;border-radius:5px;padding:4px 8px;color:#e2e8f0;font-size:.78rem;cursor:pointer}'
+    '.col-sample{color:#4a5568;font-size:.72rem;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+    '.filter-list{display:flex;flex-direction:column;gap:8px}'
+    '.filter-row{display:flex;align-items:center;gap:8px}'
+    'select.filter-col,select.filter-op{background:#0d1117;border:1px solid #2d3748;border-radius:6px;padding:7px 10px;color:#e2e8f0;font-size:.8rem;cursor:pointer}'
+    'select.filter-col{min-width:130px}'
+    'select.filter-op{min-width:110px}'
+    '.filter-val{background:#0d1117;border:1px solid #2d3748;border-radius:6px;padding:7px 10px;color:#e2e8f0;font-size:.8rem;flex:1}'
+    '.filter-val:focus{border-color:#3182ce;outline:none}'
+    '.filter-rm{background:none;border:none;color:#4a5568;cursor:pointer;font-size:1.1rem;padding:0 4px;line-height:1}'
+    '.filter-rm:hover{color:#fc8181}'
+    '.no-filters{font-size:.8rem;color:#4a5568;padding:10px 0}'
+    '.btn-link{background:none;border:none;color:#63b3ed;cursor:pointer;font-size:.78rem;padding:0}'
+    '.btn-link:hover{text-decoration:underline}'
+    '.panel-footer{display:flex;align-items:center;gap:12px;margin-top:8px}'
+    '.btn{display:inline-flex;align-items:center;gap:6px;padding:10px 22px;border-radius:8px;font-size:.875rem;font-weight:600;cursor:pointer;border:none;transition:opacity .15s,background .15s;text-decoration:none}'
+    '.btn:disabled{opacity:.4;cursor:not-allowed}'
+    '.btn-primary{background:#3182ce;color:#fff}.btn-primary:hover:not(:disabled){background:#2b6cb0}'
+    '.btn-ghost{background:#2d3748;color:#e2e8f0}.btn-ghost:hover{background:#3a4459}'
+    '.spin-wrap{display:flex;align-items:center;gap:8px;font-size:.85rem;color:#718096}'
+    '.spinner{width:14px;height:14px;border:2px solid #2d3748;border-top-color:#63b3ed;border-radius:50%;animation:spin .6s linear infinite}'
+    '@keyframes spin{to{transform:rotate(360deg)}}'
+    '.err-msg{color:#fc8181;font-size:.85rem}'
+    '.success-block{text-align:center;padding:32px 0 24px}'
+    '.success-block .s-icon{font-size:3rem;margin-bottom:16px;display:block}'
+    '.success-block h2{font-size:1.4rem;font-weight:700;margin-bottom:8px}'
+    '.success-block .pid{font-family:monospace;font-size:.85rem;color:#63b3ed;background:#0d1627;'
+    'padding:6px 14px;border-radius:6px;display:inline-block;margin-bottom:20px}'
+    '.sql-block{background:#0d1117;border:1px solid #2d3748;border-radius:8px;padding:16px;'
+    'font-family:"JetBrains Mono","Fira Code",monospace;font-size:.75rem;color:#a0aec0;'
+    'white-space:pre;overflow-x:auto;line-height:1.6;max-height:300px;overflow-y:auto}'
+    '</style></head><body>'
+    '<div class="topbar">'
+    '<div class="logo"><svg viewBox="0 0 16 16" fill="none">'
+    '<rect width="16" height="16" rx="3" fill="#3182ce"/>'
+    '<path d="M4 8h8M8 4v8" stroke="white" stroke-width="1.8" stroke-linecap="round"/>'
+    '</svg></div>'
+    '<h1>DataFabrik — Build Cleaning Pipeline</h1>'
+    '<a href="/">← Back to Portal</a>'
+    '</div>'
+    '<div class="page">'
+    '<div class="stepper">'
+    '<div class="si active" id="si1"><div class="si-circle">1</div>Upload CSV</div>'
+    '<div class="si-sep"></div>'
+    '<div class="si" id="si2"><div class="si-circle">2</div>Configure Cleaning</div>'
+    '<div class="si-sep"></div>'
+    '<div class="si" id="si3"><div class="si-circle">3</div>Pipeline Ready</div>'
+    '</div>'
+    '<div id="p1" class="panel active">'
+    '<div class="panel-head"><h2>Upload your data</h2>'
+    '<p>Start by uploading a CSV file. Columns and types will be detected automatically.</p></div>'
+    '<div class="card">'
+    '<div class="drop-zone" id="dz">'
+    '<input type="file" id="fi" accept=".csv" onchange="onFile(this)">'
+    '<div id="dz-idle"><span class="dz-icon">📂</span>'
+    '<div class="dz-main">Drop a CSV here, or click to browse</div>'
+    '<div class="dz-sub">.csv files only</div></div>'
+    '<div id="dz-done" style="display:none"><span class="dz-icon">📄</span>'
+    '<div class="dz-name" id="dz-fname"></div>'
+    '<div class="dz-sub" id="dz-fsize"></div></div>'
+    '</div>'
+    '<div class="field-row">'
+    '<span class="field-label">Table name</span>'
+    '<span class="field-prefix">raw.</span>'
+    '<input type="text" id="tbl-inp" placeholder="customers" oninput="checkStep1()">'
+    '</div>'
+    '</div>'
+    '<div class="panel-footer">'
+    '<button class="btn btn-primary" id="s1-btn" onclick="doUpload()" disabled>Continue →</button>'
+    '<div id="s1-status"></div>'
+    '</div>'
+    '</div>'
+    '<div id="p2" class="panel">'
+    '<div class="panel-head"><h2>Configure cleaning</h2>'
+    '<p>Choose which columns to keep, set their output types, and add row filters.</p></div>'
+    '<div class="source-bar" id="src-bar"></div>'
+    '<div class="card">'
+    '<div class="section-title">Columns</div>'
+    '<div class="col-wrap"><table class="col-tbl">'
+    '<thead><tr>'
+    '<th></th><th>Source column</th><th>Output name</th><th>Type</th><th>Sample values</th>'
+    '</tr></thead>'
+    '<tbody id="col-tbody"></tbody>'
+    '</table></div>'
+    '</div>'
+    '<div class="card">'
+    '<div class="section-title">Filters '
+    '<button class="btn-link" onclick="addFilter()">+ Add filter</button>'
+    '</div>'
+    '<div class="filter-list" id="filter-list"></div>'
+    '<div class="no-filters" id="no-filters">No filters — all rows will be included</div>'
+    '</div>'
+    '<div class="panel-footer">'
+    '<button class="btn btn-ghost" onclick="goStep(1)">← Back</button>'
+    '<button class="btn btn-primary" id="s2-btn" onclick="doBuild()">Build Cleaning Pipeline →</button>'
+    '<div id="s2-status"></div>'
+    '</div>'
+    '</div>'
+    '<div id="p3" class="panel">'
+    '<div class="card">'
+    '<div class="success-block">'
+    '<span class="s-icon">✅</span>'
+    '<h2>Cleaning Pipeline Created</h2>'
+    '<div class="pid" id="p3-pid"></div>'
+    '<a class="btn btn-primary" id="p3-link" href="#" target="_blank">View &amp; Run in Airflow →</a>'
+    '</div>'
+    '</div>'
+    '<div class="card">'
+    '<div class="section-title">Generated dbt SQL</div>'
+    '<div class="sql-block" id="p3-sql"></div>'
+    '</div>'
+    '</div>'
+    '</div>'
+    '<script>'
+    'const TYPES=["TEXT","INTEGER","NUMERIC","DATE","TIMESTAMP","BOOLEAN"];'
+    'const OPS=[["=","equals"],["!=","not equals"],[">=","≥"],["<=","≤"],["LIKE","contains"],["IS NULL","is empty"],["IS NOT NULL","is not empty"]];'
+    'let state={table:"",columns:[],file:null};'
+    'let filterSeq=0;'
+    'const dz=document.getElementById("dz");'
+    'dz.addEventListener("dragover",e=>{e.preventDefault();dz.classList.add("drag")});'
+    'dz.addEventListener("dragleave",()=>dz.classList.remove("drag"));'
+    'dz.addEventListener("drop",e=>{e.preventDefault();dz.classList.remove("drag");'
+    'const f=e.dataTransfer.files[0];if(f&&f.name.toLowerCase().endsWith(".csv"))applyFile(f);});'
+    'function onFile(inp){if(inp.files[0])applyFile(inp.files[0]);}'
+    'function applyFile(f){'
+    'state.file=f;'
+    'document.getElementById("dz-idle").style.display="none";'
+    'document.getElementById("dz-done").style.display="";'
+    'document.getElementById("dz-fname").textContent=f.name;'
+    'document.getElementById("dz-fsize").textContent=(f.size/1024).toFixed(1)+" KB";'
+    'dz.classList.add("done");'
+    'const inp=document.getElementById("tbl-inp");'
+    'if(!inp.value)inp.value=f.name.replace(/\\.csv$/i,"").replace(/[^a-z0-9]+/gi,"_").toLowerCase();'
+    'checkStep1();}'
+    'function checkStep1(){'
+    'const t=document.getElementById("tbl-inp").value.trim();'
+    'document.getElementById("s1-btn").disabled=!(state.file&&t);}'
+    'async function doUpload(){'
+    'const t=document.getElementById("tbl-inp").value.trim();'
+    'const btn=document.getElementById("s1-btn");'
+    'const st=document.getElementById("s1-status");'
+    'btn.disabled=true;'
+    'st.innerHTML="<div class=\\"spin-wrap\\"><div class=\\"spinner\\"></div>&nbsp;Uploading…</div>";'
+    'const fd=new FormData();fd.append("table",t);fd.append("file",state.file);'
+    'try{'
+    'const r=await fetch("/api/workflow/upload",{method:"POST",body:fd});'
+    'const j=await r.json();'
+    'if(r.ok){state.table=j.table_name;renderStep2(j);}else{'
+    'st.innerHTML=`<span class="err-msg">${j.detail||"Upload failed"}</span>`;btn.disabled=false;}'
+    '}catch(e){st.innerHTML="<span class=\\"err-msg\\">Network error</span>";btn.disabled=false;}}'
+    'function renderStep2(data){'
+    'state.columns=data.columns;'
+    'document.getElementById("src-bar").innerHTML='
+    '`<b>raw.${state.table}</b> &nbsp;·&nbsp; ${data.rows} rows &nbsp;·&nbsp; ${data.columns.length} columns`;'
+    'const tbody=document.getElementById("col-tbody");'
+    'tbody.innerHTML=data.columns.map((c,i)=>'
+    '`<tr>'
+    '<td><input type="checkbox" class="col-check" checked data-i="${i}"></td>'
+    '<td style="color:#718096;font-size:.78rem">${c.name}</td>'
+    '<td><input type="text" class="col-out" value="${c.name}" data-i="${i}"></td>'
+    '<td><select class="col-type" data-i="${i}">${TYPES.map(t=>`<option${t===c.type?" selected":""}>${t}</option>`).join("")}</select></td>'
+    '<td class="col-sample">${c.samples.join(", ")}</td>'
+    '</tr>`'
+    ').join("");'
+    'goStep(2);}'
+    'function goStep(n){'
+    'document.querySelectorAll(".panel").forEach(p=>p.classList.remove("active"));'
+    'document.getElementById(`p${n}`).classList.add("active");'
+    '["si1","si2","si3"].forEach((id,i)=>{'
+    'const el=document.getElementById(id);'
+    'el.className="si"+(i+1<n?" done":i+1===n?" active":"");});}'
+    'let filterSeq=0;'
+    'function addFilter(){'
+    'const id=++filterSeq;'
+    'const cols=state.columns.map(c=>c.name);'
+    'const row=document.createElement("div");'
+    'row.className="filter-row";row.id=`fr${id}`;'
+    'row.innerHTML='
+    '`<select class="filter-col">${cols.map(n=>`<option>${n}</option>`).join("")}</select>'
+    '<select class="filter-op" onchange="toggleVal(this)">${OPS.map(([v,l])=>`<option value="${v}">${l}</option>`).join("")}</select>'
+    '<input type="text" class="filter-val" placeholder="value">'
+    '<button class="filter-rm" onclick="this.parentElement.remove();syncFilters()">×</button>`;'
+    'document.getElementById("filter-list").appendChild(row);'
+    'document.getElementById("no-filters").style.display="none";}'
+    'function toggleVal(sel){'
+    'const val=sel.parentElement.querySelector(".filter-val");'
+    'val.style.display=["IS NULL","IS NOT NULL"].includes(sel.value)?"none":"";}'
+    'function syncFilters(){'
+    'const rows=document.querySelectorAll(".filter-row");'
+    'document.getElementById("no-filters").style.display=rows.length?"none":"";}'
+    'async function doBuild(){'
+    'const cols=[];'
+    'document.querySelectorAll("#col-tbody tr").forEach((tr,i)=>{'
+    'cols.push({name:state.columns[i].name,'
+    'output_name:tr.querySelector(".col-out").value.trim(),'
+    'type:tr.querySelector(".col-type").value,'
+    'include:tr.querySelector(".col-check").checked});});'
+    'const filters=[];'
+    'document.querySelectorAll(".filter-row").forEach(row=>{'
+    'const op=row.querySelector(".filter-op").value;'
+    'const val=row.querySelector(".filter-val");'
+    'filters.push({column:row.querySelector(".filter-col").value,operator:op,value:val?val.value.trim():""});});'
+    'const btn=document.getElementById("s2-btn");'
+    'const st=document.getElementById("s2-status");'
+    'btn.disabled=true;'
+    'st.innerHTML="<div class=\\"spin-wrap\\"><div class=\\"spinner\\"></div>&nbsp;Building pipeline…</div>";'
+    'try{'
+    'const r=await fetch("/api/workflow/build-clean",{method:"POST",'
+    'headers:{"Content-Type":"application/json"},'
+    'body:JSON.stringify({table:state.table,columns:cols,filters})});'
+    'const j=await r.json();'
+    'if(r.ok){'
+    'document.getElementById("p3-pid").textContent=j.pipeline_id;'
+    'document.getElementById("p3-link").href=j.airflow_url;'
+    'document.getElementById("p3-sql").textContent=j.sql_preview;'
+    'goStep(3);'
+    '}else{st.innerHTML=`<span class="err-msg">${j.detail||"Build failed"}</span>`;btn.disabled=false;}'
+    '}catch(e){st.innerHTML="<span class=\\"err-msg\\">Network error</span>";btn.disabled=false;}}'
+    '</script></body></html>'
+)
+
+
+@app.get("/workflow", response_class=HTMLResponse)
+def workflow_page() -> str:
+    """Data cleaning pipeline wizard."""
+    return _WORKFLOW_HTML
+
 
 _UPLOAD_HTML = (
     '<!DOCTYPE html><html lang="en"><head>'
