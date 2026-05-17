@@ -812,7 +812,7 @@ select.form-control{cursor:pointer}
 // ── Navigation ──────────────────────────────────────────────────────────
 const SECTIONS = ['home','pipelines','airflow','metabase','minio','builder','onboard','upload','workflow'];
 const IFRAMES  = {airflow:'/tools/airflow', metabase:'http://localhost:3001', minio:'http://localhost:9002',
-                  onboard:'/onboard', upload:'/upload', workflow:'/workflow'};
+                  onboard:'/onboard?embed=1', upload:'/upload?embed=1', workflow:'/workflow?embed=1'};
 // Airflow is proxied via nginx on :8082 which strips X-Frame-Options
 const iframeLoaded = {};
 
@@ -1654,7 +1654,9 @@ _ONBOARD_HTML = (
     '  finally{showSpinner(false);document.getElementById("btn-register").disabled=false;}'
     '}'
     'useTemplate("jdbc");'
-    '</script></body></html>'
+    '</script>'
+    '<script>if(location.search.includes("embed=1"))document.querySelectorAll(\'a[href="/"]\').forEach(e=>e.style.display="none");</script>'
+    '</body></html>'
 )
 
 
@@ -2140,7 +2142,9 @@ _WORKFLOW_HTML = (
     'st.innerHTML=`<span style="color:#fc8181">Trigger failed: ${j.detail||r.status}</span>`;'
     'btn.disabled=false;}}'
     'catch(e){st.innerHTML="<span style=\\"color:#fc8181\\">Network error triggering run.</span>";btn.disabled=false;}}'
-    '</script></body></html>'
+    '</script>'
+    '<script>if(location.search.includes("embed=1"))document.querySelectorAll(\'a[href="/"]\').forEach(e=>e.style.display="none");</script>'
+    '</body></html>'
 )
 
 
@@ -2305,7 +2309,9 @@ _UPLOAD_HTML = (
     '}catch(e){'
     'st.innerHTML=\'<span class="result-err">✗ Network error</span>\';'
     'btn.disabled=false;}}'
-    '</script></body></html>'
+    '</script>'
+    '<script>if(location.search.includes("embed=1"))document.querySelectorAll(\'a[href="/"]\').forEach(e=>e.style.display="none");</script>'
+    '</body></html>'
 )
 
 
