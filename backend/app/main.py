@@ -198,6 +198,163 @@ def api_trigger_pipeline(dag_id: str) -> dict:
     return resp.json()
 
 
+# ── Admin API ──────────────────────────────────────────────────────────────────
+
+_RESTART_CONTAINERS = [
+    "datafabrik-airflow-webserver",
+    "datafabrik-airflow-scheduler",
+    "datafabrik-metabase",
+    "datafabrik-minio",
+    "datafabrik-nginx-proxy",
+    "datafabrik-presto",
+]
+
+_HEALTH_CHECKS: dict[str, str] = {
+    "airflow":  f"{AIRFLOW_URL}/health",
+    "minio":    "http://minio:9000/minio/health/live",
+    "metabase": "http://metabase:3000/api/health",
+    "presto":   "http://presto:8080/v1/info",
+}
+
+
+def _check_one(service: str) -> str:
+    """Return 'up' / 'degraded' / 'down' for a single service."""
+    if service == "postgres":
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            return "up"
+        except Exception:
+            return "down"
+    url = _HEALTH_CHECKS.get(service)
+    if not url:
+        return "unknown"
+    try:
+        r = _requests.get(url, timeout=5)
+        return "up" if r.status_code < 500 else "degraded"
+    except Exception:
+        return "down"
+
+
+@app.get("/api/admin/health")
+def api_admin_health() -> dict:
+    """Ping every service; returns {service: status} mapping."""
+    services = ["postgres", *_HEALTH_CHECKS.keys()]
+    return {svc: _check_one(svc) for svc in services}
+
+
+@app.get("/api/admin/health/{service}")
+def api_admin_health_one(service: str) -> dict:
+    """Ping a single named service; used by per-card progress bars."""
+    if service not in ("postgres", *_HEALTH_CHECKS.keys()):
+        raise HTTPException(status_code=404, detail=f"Unknown service '{service}'")
+    return {"service": service, "status": _check_one(service)}
+
+
+@app.post("/api/admin/restart")
+def api_admin_restart() -> dict:
+    """Restart non-critical containers in a background thread; returns immediately."""
+    import threading
+
+    try:
+        import docker as _docker_mod
+        client = _docker_mod.from_env()
+    except ImportError:
+        raise HTTPException(status_code=503, detail="docker SDK not installed in container")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Docker socket unavailable: {exc}")
+
+    def _do_restart() -> None:
+        for name in _RESTART_CONTAINERS:
+            try:
+                container = client.containers.get(name)
+                container.restart(timeout=10)
+            except Exception:
+                pass
+
+    threading.Thread(target=_do_restart, daemon=True).start()
+
+    return {"message": "Restart initiated — services back online in ~30–60 seconds."}
+
+
+# ── Tool sign-in relays ───────────────────────────────────────────────────────
+
+_RELAY_CSS = (
+    'body{background:#0f1117;color:#e2e8f0;font-family:-apple-system,sans-serif;'
+    'display:flex;align-items:center;justify-content:center;height:100vh;margin:0;flex-direction:column;gap:12px}'
+    '.sp{width:20px;height:20px;border:2px solid #2d3748;border-top-color:#63b3ed;'
+    'border-radius:50%;animation:spin .7s linear infinite}'
+    '@keyframes spin{to{transform:rotate(360deg)}}'
+)
+
+
+@app.get("/tools/airflow", response_class=HTMLResponse)
+def tool_airflow() -> HTMLResponse:
+    """
+    Auto-login relay for Airflow.
+
+    Cookies on 'localhost' are shared across all ports (RFC 6265 has no port
+    scope).  We fetch Airflow's login page server-side to get a valid
+    session cookie + CSRF token, then forward the session cookie to the
+    browser and embed the CSRF token in an auto-submit form.  When the
+    browser POSTs to localhost:8080/login/ it already holds the matching
+    session, so Airflow's CSRF check passes.
+    """
+    import re as _re2
+    csrf_token = ""
+    session_val = ""
+    try:
+        s = _requests.Session()
+        r = s.get("http://airflow-webserver:8080/login/", timeout=5)
+        m = _re2.search(r'name="csrf_token"\s+[^>]*value="([^"]+)"', r.text)
+        csrf_token = m.group(1) if m else ""
+        session_val = r.cookies.get("session", "")
+    except Exception:
+        pass  # fall through — form will still attempt login
+
+    body = (
+        '<!DOCTYPE html><html><head><meta charset="UTF-8">'
+        f'<style>{_RELAY_CSS}</style></head><body>'
+        '<div class="sp"></div>'
+        '<p style="color:#718096;font-size:.85rem">Signing in to Airflow…</p>'
+        '<form id="f" action="http://localhost:8082/login/" method="POST" style="display:none">'
+        f'<input name="csrf_token" value="{csrf_token}">'
+        f'<input name="username"   value="{AIRFLOW_USER}">'
+        f'<input name="password"   value="{AIRFLOW_PASS}">'
+        '</form>'
+        '<script>document.getElementById("f").submit();</script>'
+        '</body></html>'
+    )
+    resp = HTMLResponse(body)
+    if session_val:
+        # Forward Airflow's session cookie — the browser will send it to
+        # localhost:8080 (same host, different port) when the form submits.
+        resp.set_cookie("session", session_val, httponly=True, samesite="lax", path="/")
+    return resp
+
+
+@app.get("/tools/minio", response_class=HTMLResponse)
+def tool_minio() -> HTMLResponse:
+    """Sign in to MinIO console via its JSON API, then redirect."""
+    minio_user = os.environ.get("AWS_ACCESS_KEY_ID", "minioadmin")
+    minio_pass = os.environ.get("AWS_SECRET_ACCESS_KEY", "minioadmin")
+    body = (
+        '<!DOCTYPE html><html><head><meta charset="UTF-8">'
+        f'<style>{_RELAY_CSS}</style></head><body>'
+        '<div class="sp"></div>'
+        '<p style="color:#718096;font-size:.85rem">Signing in to MinIO…</p>'
+        '<script>'
+        f'fetch("http://localhost:9001/api/v1/login",{{method:"POST",'
+        f'credentials:"include",headers:{{"Content-Type":"application/json"}},'
+        f'body:JSON.stringify({{accessKey:"{minio_user}",secretKey:"{minio_pass}"}})}}'
+        f').then(()=>window.location="http://localhost:9001")'
+        f'.catch(()=>window.location="http://localhost:9001");'
+        '</script>'
+        '</body></html>'
+    )
+    return HTMLResponse(body)
+
+
 _PORTAL_HTML = '''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -313,6 +470,20 @@ select.form-control{cursor:pointer}
 .tool-tips-title{font-size:.72rem;text-transform:uppercase;letter-spacing:.5px;color:#4a5568;font-weight:600;margin-bottom:12px}
 .tool-tip{font-size:.85rem;color:#a0aec0;padding:5px 0;border-bottom:1px solid #1e2535;line-height:1.5}
 .tool-tip:last-child{border-bottom:none}
+/* ── Service status ── */
+.svc-grid{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px}
+.svc-card{background:#1a1f2e;border:1px solid #2d3748;border-radius:8px;padding:10px 14px 13px;display:flex;align-items:center;gap:8px;min-width:140px;position:relative;overflow:hidden}
+.svc-dot{width:8px;height:8px;border-radius:50%;background:#4a5568;flex-shrink:0;transition:background .3s}
+.svc-dot.up{background:#48bb78}.svc-dot.down{background:#fc8181}.svc-dot.degraded{background:#ecc94b}.svc-dot.checking{background:#4a5568}
+.svc-name{font-size:.8rem;font-weight:600;color:#e2e8f0}.svc-status-txt{font-size:.72rem;color:#718096;margin-left:auto;text-transform:capitalize}
+.svc-bar{position:absolute;bottom:0;left:0;right:0;height:3px;background:#1e2535}
+.svc-bar-fill{height:3px;width:0%;border-radius:0 2px 2px 0;background:#3182ce}
+/* ── Credentials ── */
+.cred-grid{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px}
+.cred-card{background:#151a27;border:1px solid #2d3748;border-radius:8px;padding:12px 16px;min-width:200px}
+.cred-tool{font-size:.78rem;font-weight:600;color:#a0aec0;margin-bottom:8px}
+.cred-row{font-size:.75rem;color:#718096;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:3px}
+.cred-val{color:#e2e8f0;font-family:monospace;font-size:.78rem}
 </style>
 </head>
 <body>
@@ -369,6 +540,9 @@ select.form-control{cursor:pointer}
   <div id="sec-home" class="section active">
     <div class="sec-header">
       <h2>DataFabrik Portal</h2>
+      <button class="btn btn-ghost btn-sm" onclick="checkHealth()" id="health-btn">↻ Check Services</button>
+      <button class="btn btn-danger btn-sm" onclick="restartServices()" id="restart-btn">🔄 Restart Services</button>
+      <button class="btn btn-ghost btn-sm" onclick="openAllTools()">🔑 Open All Tools</button>
       <span class="sub" id="home-ts"></span>
     </div>
     <div class="sec-body">
@@ -378,10 +552,18 @@ select.form-control{cursor:pointer}
         <div class="card"><div class="num red" id="stat-fail">—</div><div class="lbl">Failed</div></div>
         <div class="card"><div class="num yellow" id="stat-paused">—</div><div class="lbl">Paused</div></div>
       </div>
+      <h3 style="font-size:.85rem;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px">Services</h3>
+      <div class="svc-grid">
+        <div class="svc-card"><span class="svc-dot" id="dot-postgres"></span><span class="svc-name">Postgres</span><span class="svc-status-txt" id="status-postgres">—</span><div class="svc-bar"><div class="svc-bar-fill" id="barfill-postgres"></div></div></div>
+        <div class="svc-card"><span class="svc-dot" id="dot-airflow"></span><span class="svc-name">Airflow</span><span class="svc-status-txt" id="status-airflow">—</span><div class="svc-bar"><div class="svc-bar-fill" id="barfill-airflow"></div></div></div>
+        <div class="svc-card"><span class="svc-dot" id="dot-minio"></span><span class="svc-name">MinIO</span><span class="svc-status-txt" id="status-minio">—</span><div class="svc-bar"><div class="svc-bar-fill" id="barfill-minio"></div></div></div>
+        <div class="svc-card"><span class="svc-dot" id="dot-metabase"></span><span class="svc-name">Metabase</span><span class="svc-status-txt" id="status-metabase">—</span><div class="svc-bar"><div class="svc-bar-fill" id="barfill-metabase"></div></div></div>
+        <div class="svc-card"><span class="svc-dot" id="dot-presto"></span><span class="svc-name">Presto</span><span class="svc-status-txt" id="status-presto">—</span><div class="svc-bar"><div class="svc-bar-fill" id="barfill-presto"></div></div></div>
+      </div>
       <h3 style="font-size:.85rem;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px">Quick Access</h3>
       <div class="qlinks">
         <a class="qlink" href="#" onclick="nav('pipelines');return false"><span class="ql-icon">📋</span> Pipelines</a>
-        <a class="qlink" href="http://localhost:8080" target="_blank"><span class="ql-icon">✈️</span> Airflow ↗</a>
+        <a class="qlink" href="/tools/airflow" target="_blank"><span class="ql-icon">✈️</span> Airflow ↗</a>
         <a class="qlink" href="http://localhost:3000" target="_blank"><span class="ql-icon">📊</span> Metabase ↗</a>
         <a class="qlink" href="http://localhost:9001" target="_blank"><span class="ql-icon">🗄️</span> MinIO ↗</a>
         <a class="qlink" href="/dashboard" target="_blank"><span class="ql-icon">🖥️</span> Health Dashboard ↗</a>
@@ -599,7 +781,8 @@ select.form-control{cursor:pointer}
 <script>
 // ── Navigation ──────────────────────────────────────────────────────────
 const SECTIONS = ['home','pipelines','airflow','metabase','minio','builder'];
-const IFRAMES  = {airflow:'http://localhost:8080', metabase:'http://localhost:3001', minio:'http://localhost:9002'};
+const IFRAMES  = {airflow:'/tools/airflow', metabase:'http://localhost:3001', minio:'http://localhost:9002'};
+// Airflow is proxied via nginx on :8082 which strips X-Frame-Options
 const iframeLoaded = {};
 
 function nav(id) {
@@ -624,6 +807,83 @@ function toast(msg, type='ok') {
   setTimeout(() => t.remove(), 4000);
 }
 
+// ── Admin / Services ─────────────────────────────────────────────────────
+const _SVC_NAMES = ['postgres','airflow','minio','metabase','presto'];
+
+async function checkHealth() {
+  const btn = document.getElementById('health-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+
+  // Kick off each bar's indeterminate fill animation
+  _SVC_NAMES.forEach(s => {
+    const dot  = document.getElementById('dot-'+s);
+    const st   = document.getElementById('status-'+s);
+    const fill = document.getElementById('barfill-'+s);
+    if (dot)  dot.className = 'svc-dot checking';
+    if (st)   st.textContent = 'checking…';
+    if (fill) {
+      fill.style.cssText = 'width:0%;background:#3182ce;transition:none;opacity:1';
+      fill.offsetWidth; // force reflow so animation restarts
+      fill.style.transition = 'width 3s cubic-bezier(.05,.6,.1,1)';
+      fill.style.width = '78%';
+    }
+  });
+
+  let up = 0;
+  // Fire one request per service in parallel so bars resolve independently
+  await Promise.all(_SVC_NAMES.map(async svc => {
+    let status = 'down';
+    try {
+      const r = await fetch('/api/admin/health/'+svc).then(res => res.json());
+      status = r.status || 'down';
+    } catch(_) {}
+
+    if (status === 'up') up++;
+    const dot  = document.getElementById('dot-'+svc);
+    const st   = document.getElementById('status-'+svc);
+    const fill = document.getElementById('barfill-'+svc);
+    if (dot)  dot.className = 'svc-dot ' + status;
+    if (st)   st.textContent = status;
+    if (fill) {
+      const color = status === 'up' ? '#48bb78' : status === 'down' ? '#fc8181' : '#ecc94b';
+      fill.style.transition = 'width .2s ease, background .2s';
+      fill.style.background = color;
+      fill.style.width = '100%';
+      setTimeout(() => {
+        fill.style.transition = 'opacity .35s';
+        fill.style.opacity = '0';
+        setTimeout(() => { fill.style.cssText = 'width:0%;opacity:1;transition:none'; }, 380);
+      }, 400);
+    }
+  }));
+
+  const total = _SVC_NAMES.length;
+  toast(up === total ? `All ${total} services up` : `${up}/${total} services up`, up === total ? 'ok' : 'err');
+  if (btn) { btn.disabled = false; btn.textContent = '↻ Check Services'; }
+}
+
+async function restartServices() {
+  if (!confirm('Restart Airflow, Metabase, MinIO, Nginx, and Presto?\\n\\nThey will be back in ~30 seconds.')) return;
+  const btn = document.getElementById('restart-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Restarting…'; }
+  try {
+    await fetch('/api/admin/restart', {method:'POST'}).then(r => r.json());
+    toast('Restart triggered — checking health in 30s');
+    setTimeout(checkHealth, 30000);
+  } catch(e) {
+    toast('Restart failed: ' + e.message, 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 Restart Services'; }
+  }
+}
+
+function openAllTools() {
+  window.open('/tools/airflow', '_blank');
+  window.open('/tools/minio', '_blank');
+  window.open('http://localhost:3000', '_blank');
+  toast('Opening tools — signing in automatically…');
+}
+
 // ── Home ────────────────────────────────────────────────────────────────
 async function loadHome() {
   document.getElementById('home-ts').textContent = 'Loading…';
@@ -641,6 +901,7 @@ async function loadHome() {
   } catch(e) {
     document.getElementById('home-ts').textContent = 'Error loading data';
   }
+  checkHealth();
 }
 
 function renderHomeRuns(runs) {
@@ -1700,7 +1961,11 @@ _WORKFLOW_HTML = (
     '<span class="s-icon">✅</span>'
     '<h2>Cleaning Pipeline Created</h2>'
     '<div class="pid" id="p3-pid"></div>'
-    '<a class="btn btn-primary" id="p3-link" href="#" target="_blank">View &amp; Run in Airflow →</a>'
+    '<div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:8px">'
+    '<button class="btn btn-primary" id="run-btn" onclick="runPipeline()">▶ Run Now</button>'
+    '<a class="btn btn-ghost" id="p3-link" href="#" target="_blank">Open in Airflow ↗</a>'
+    '</div>'
+    '<div id="run-status" style="font-size:.85rem;margin-top:6px"></div>'
     '</div>'
     '</div>'
     '<div class="card">'
@@ -1811,9 +2076,39 @@ _WORKFLOW_HTML = (
     'document.getElementById("p3-pid").textContent=j.pipeline_id;'
     'document.getElementById("p3-link").href=j.airflow_url;'
     'document.getElementById("p3-sql").textContent=j.sql_preview;'
+    'state.pipeline_id=j.pipeline_id;'
     'goStep(3);'
     '}else{st.innerHTML=`<span class="err-msg">${j.detail||"Build failed"}</span>`;btn.disabled=false;}'
     '}catch(e){st.innerHTML="<span class=\\"err-msg\\">Network error</span>";btn.disabled=false;}}'
+    'async function runPipeline(){'
+    'const btn=document.getElementById("run-btn");'
+    'const st=document.getElementById("run-status");'
+    'const pid=state.pipeline_id;'
+    'btn.disabled=true;'
+    'st.innerHTML="<span style=\\"color:#718096\\">⏳ Waiting for Airflow to register DAG…</span>";'
+    'let found=false;'
+    'for(let i=0;i<12;i++){'
+    'await new Promise(r=>setTimeout(r,5000));'
+    'try{'
+    'const r=await fetch("/api/pipelines");'
+    'const j=await r.json();'
+    'const dags=Array.isArray(j)?j:(j.dags||[]);'
+    'if(dags.some(d=>(d.dag_id||d.pipeline_id||d.id)===pid)){found=true;break;}'
+    '}catch(_){}'
+    'st.innerHTML=`<span style="color:#718096">⏳ Waiting for Airflow… (${(i+1)*5}s)</span>`;}'
+    'if(!found){'
+    'st.innerHTML="<span style=\\"color:#fc8181\\">DAG not detected after 60s — try opening Airflow manually.</span>";'
+    'btn.disabled=false;return;}'
+    'st.innerHTML="<span style=\\"color:#718096\\">🚀 Triggering run…</span>";'
+    'try{'
+    'const r=await fetch(`/api/pipelines/${pid}/trigger`,{method:"POST"});'
+    'if(r.ok){'
+    'st.innerHTML="<span style=\\"color:#68d391\\">✓ Pipeline triggered! Check Airflow for progress.</span>";'
+    '}else{'
+    'const j=await r.json();'
+    'st.innerHTML=`<span style="color:#fc8181">Trigger failed: ${j.detail||r.status}</span>`;'
+    'btn.disabled=false;}}'
+    'catch(e){st.innerHTML="<span style=\\"color:#fc8181\\">Network error triggering run.</span>";btn.disabled=false;}}'
     '</script></body></html>'
 )
 

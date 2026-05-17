@@ -9,6 +9,8 @@ x-airflow-common: &airflow-common
     AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session"
     AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-please-change-me}
     AIRFLOW__WEBSERVER__X_FRAME_ENABLED: "False"
+    AIRFLOW__WEBSERVER__WTF_CSRF_ENABLED: "False"
+    AIRFLOW__WEBSERVER__BASE_URL: "http://localhost:8082"
     AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
     AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
     AWS_ENDPOINT_URL: http://minio:9000
@@ -171,6 +173,7 @@ services:
       - ./backend:/app
       - ./orchestration/airflow/configs:/app/configs
       - ./dbt/datafabrik_models/models:/app/dbt_models
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       DATABASE_URL: postgresql+psycopg2://datafabrik:datafabrik@postgres:5432/datafabrik
       S3_ENDPOINT_URL: http://minio:9000
@@ -197,6 +200,7 @@ services:
     container_name: datafabrik-nginx-proxy
     ports:
       - "3001:3001"
+      - "8082:8082"
       - "9002:9002"
     volumes:
       - ./infra/docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
