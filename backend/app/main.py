@@ -2209,7 +2209,6 @@ _WORKFLOW_HTML = (
     '["si1","si2","si3","si4","si5"].forEach((id,i)=>{'
     'const el=document.getElementById(id);'
     'if(el)el.className="si"+(i+1<n?" done":i+1===n?" active":"");});}'
-    'let filterSeq=0;'
     'function addFilter(){'
     'const id=++filterSeq;'
     'const cols=state.columns.map(c=>c.name);'
