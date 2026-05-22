@@ -2676,8 +2676,8 @@ function renderCleanSql() {
   });
   const wh=allF.filter(f=>f.column).map(f=>{
     if(f.operator==='IS NULL'||f.operator==='IS NOT NULL') return '"'+f.column+'" '+f.operator;
-    if(f.operator==='LIKE') return '"'+f.column+'" LIKE \'%'+f.value+'%\'';
-    return '"'+f.column+'" '+f.operator+' \''+f.value+'\'';
+    if(f.operator==='LIKE') return `"${f.column}" LIKE '%${f.value}%'`;
+    return `"${f.column}" ${f.operator} '${f.value}'`;
   });
   let sql='with source as (\\n    select * from raw."'+S.table+'"\\n),\\ncleaned as (\\n    select\\n';
   sql+=(sel.join(',\\n')||'        *')+'\\n    from source';
