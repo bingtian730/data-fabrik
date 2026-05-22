@@ -527,7 +527,7 @@ select.form-control{cursor:pointer}
       <span class="icon">📤</span> Upload Data
     </button>
     <button class="nav-btn" onclick="nav('workflow')" id="nav-workflow">
-      <span class="icon">🧹</span> Pipeline Wizard
+      <span class="icon">🧹</span> Workflow Wizard
     </button>
   </div>
   <div class="sb-footer">Local Development</div>
@@ -798,10 +798,10 @@ select.form-control{cursor:pointer}
   <!-- PIPELINE WIZARD -->
   <div id="sec-workflow" class="section iframe-section">
     <div class="iframe-bar">
-      <span>🧹 Pipeline Wizard — upload CSV, clean data, build aggregation pipelines</span>
+      <span>🧹 Workflow Wizard — upload CSV, clean data, build aggregation pipelines</span>
     </div>
     <div class="iframe-wrap">
-      <iframe id="frame-workflow" title="Pipeline Wizard" allowfullscreen></iframe>
+      <iframe id="frame-workflow" title="Workflow Wizard" allowfullscreen></iframe>
     </div>
   </div>
 
@@ -1927,7 +1927,7 @@ def api_build_agg(payload: _BuildAggPayload) -> dict:
 _WORKFLOW_HTML = (
     '<!DOCTYPE html><html lang="en"><head>'
     '<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-    '<title>DataFabrik — Pipeline Wizard</title>'
+    '<title>DataFabrik — Workflow Wizard</title>'
     '<style>'
     '*{box-sizing:border-box;margin:0;padding:0}'
     'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh}'
@@ -2026,7 +2026,7 @@ _WORKFLOW_HTML = (
     '<rect width="16" height="16" rx="3" fill="#3182ce"/>'
     '<path d="M4 8h8M8 4v8" stroke="white" stroke-width="1.8" stroke-linecap="round"/>'
     '</svg></div>'
-    '<h1>DataFabrik — Pipeline Wizard</h1>'
+    '<h1>DataFabrik — Workflow Wizard</h1>'
     '<a href="/">← Back to Portal</a>'
     '</div>'
     '<div class="page">'
