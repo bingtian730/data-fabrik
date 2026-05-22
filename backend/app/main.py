@@ -187,15 +187,35 @@ def health() -> dict:
 
 @app.post("/api/pipelines/{dag_id}/trigger")
 def api_trigger_pipeline(dag_id: str) -> dict:
-    """Trigger an Airflow DAG run."""
-    resp = _requests.post(
-        f"{AIRFLOW_URL}/api/v1/dags/{dag_id}/dagRuns",
+    """Unpause then trigger an Airflow DAG run, retrying while DagBag loads."""
+    import time as _time
+    # DAGs start paused — unpause before triggering (ignore errors, DAG may not exist yet)
+    _requests.patch(
+        f"{AIRFLOW_URL}/api/v1/dags/{dag_id}",
         auth=(AIRFLOW_USER, AIRFLOW_PASS),
-        json={},
+        json={"is_paused": False},
         timeout=10,
     )
-    resp.raise_for_status()
-    return resp.json()
+    # Retry up to 6 times (18 s) while the scheduler loads the DagBag
+    last: dict = {}
+    for attempt in range(6):
+        resp = _requests.post(
+            f"{AIRFLOW_URL}/api/v1/dags/{dag_id}/dagRuns",
+            auth=(AIRFLOW_USER, AIRFLOW_PASS),
+            json={},
+            timeout=10,
+        )
+        if resp.ok:
+            return resp.json()
+        try:
+            last = resp.json()
+        except Exception:
+            last = {"status": resp.status_code}
+        if "DagBag" in str(last) or "does not exist" in str(last):
+            _time.sleep(3)
+            continue
+        raise HTTPException(status_code=resp.status_code, detail=last)
+    raise HTTPException(status_code=503, detail=f"DAG not loaded after retries: {last}")
 
 
 # ── Admin API ──────────────────────────────────────────────────────────────────
