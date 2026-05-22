@@ -2564,7 +2564,7 @@ function goto(n) {
     document.getElementById('panel'+i).className = 'panel'+(i===n?' active':'');
     const st = document.getElementById('st'+i);
     st.className = 'stp'+(i<n?' done':i===n?' active':'');
-    document.getElementById('sc'+i).textContent = i<n ? '&#10003;' : i;
+    document.getElementById('sc'+i).innerHTML = i<n ? '&#10003;' : i;
     if (i < 5) document.getElementById('sl'+i).className = 'stp-line'+(i<n?' done':'');
   }
   window.scrollTo(0,0);
@@ -2575,7 +2575,7 @@ function toast(msg, type) {
   const tc = document.getElementById('tc');
   const t = document.createElement('div');
   t.className = 'toast '+(type||'ok');
-  t.textContent = (type==='err'?'&#10007; ':'&#10003; ')+msg;
+  t.innerHTML = (type==='err'?'&#10007; ':'&#10003; ')+msg;
   tc.appendChild(t);
   setTimeout(()=>t.remove(), 4000);
 }
@@ -2588,9 +2588,9 @@ dz.addEventListener('dragleave', ()=>dz.classList.remove('over'));
 dz.addEventListener('drop', e=>{
   e.preventDefault(); dz.classList.remove('over');
   const f = e.dataTransfer.files[0];
-  if(f){fi.files=e.dataTransfer.files; document.getElementById('fname').textContent='&#128196; '+f.name;}
+  if(f){fi.files=e.dataTransfer.files; document.getElementById('fname').innerHTML='&#128196; '+f.name;}
 });
-fi.addEventListener('change', ()=>{if(fi.files[0]) document.getElementById('fname').textContent='&#128196; '+fi.files[0].name;});
+fi.addEventListener('change', ()=>{if(fi.files[0]) document.getElementById('fname').innerHTML='&#128196; '+fi.files[0].name;});
 
 async function doUpload() {
   const file = fi.files[0], tname = document.getElementById('tname').value.trim();
@@ -2649,7 +2649,7 @@ function addFilter() {
   div.innerHTML='<select class="fc">'+copts+'</select>'
     +'<select class="fo fr-op">'+oopts+'</select>'
     +'<input type="text" class="fv" placeholder="value">'
-    +'<button class="rm-btn" onclick="document.getElementById(\''+id+'\').remove()">&#10005;</button>';
+    +'<button class="rm-btn" onclick="this.parentElement.remove()">&#10005;</button>';
   document.getElementById('flist').appendChild(div);
 }
 
@@ -2732,7 +2732,7 @@ function addMetric() {
   div.innerHTML='<select class="mc">'+copts+'</select>'
     +'<select class="mf">'+fopts+'</select>'
     +'<input type="text" class="mo" placeholder="output name (optional)">'
-    +'<button class="rm-btn" onclick="document.getElementById(\''+id+'\').remove()">&#10005;</button>';
+    +'<button class="rm-btn" onclick="this.parentElement.remove()">&#10005;</button>';
   document.getElementById('mlist').appendChild(div);
 }
 
