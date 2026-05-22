@@ -517,6 +517,9 @@ select.form-control{cursor:pointer}
       <span class="icon">🗄️</span> MinIO
     </button>
     <div class="sb-section">Build</div>
+    <button class="nav-btn" onclick="nav('demo')" id="nav-demo">
+      <span class="icon">🎬</span> Demo Wizard
+    </button>
     <button class="nav-btn" onclick="nav('builder')" id="nav-builder">
       <span class="icon">🔧</span> Pipeline Builder
     </button>
@@ -775,6 +778,16 @@ select.form-control{cursor:pointer}
     </div>
   </div>
 
+  <!-- DEMO WIZARD -->
+  <div id="sec-demo" class="section iframe-section">
+    <div class="iframe-bar">
+      <span>🎬 Customer Onboarding Demo — upload CSV, build cleaning + aggregation pipelines</span>
+    </div>
+    <div class="iframe-wrap">
+      <iframe id="frame-demo" title="Demo Wizard" allowfullscreen></iframe>
+    </div>
+  </div>
+
   <!-- ONBOARD CUSTOMER -->
   <div id="sec-onboard" class="section iframe-section">
     <div class="iframe-bar">
@@ -810,9 +823,10 @@ select.form-control{cursor:pointer}
 
 <script>
 // ── Navigation ──────────────────────────────────────────────────────────
-const SECTIONS = ['home','pipelines','airflow','metabase','minio','builder','onboard','upload','workflow'];
+const SECTIONS = ['home','pipelines','airflow','metabase','minio','builder','onboard','upload','workflow','demo'];
 const IFRAMES  = {airflow:'/tools/airflow', metabase:'http://localhost:3001', minio:'http://localhost:9002',
-                  onboard:'/onboard?embed=1', upload:'/upload?embed=1', workflow:'/workflow?embed=1'};
+                  onboard:'/onboard?embed=1', upload:'/upload?embed=1', workflow:'/workflow?embed=1',
+                  demo:'/demo?embed=1'};
 // Airflow is proxied via nginx on :8082 which strips X-Frame-Options
 const iframeLoaded = {};
 
@@ -2152,6 +2166,629 @@ _WORKFLOW_HTML = (
 def workflow_page() -> str:
     """Data cleaning pipeline wizard."""
     return _WORKFLOW_HTML
+
+
+# ── Demo: unified customer onboarding wizard ──────────────────────────────────
+
+class _DemoAggMetric(BaseModel):
+    column: str
+    fn: str
+    output_name: str = ""
+
+
+class _DemoBuildAggPayload(BaseModel):
+    table: str
+    clean_model: str
+    group_by: list[str]
+    metrics: list[_DemoAggMetric]
+
+
+def _generate_agg_sql(clean_model: str, group_by: list[str], metrics: list[dict]) -> str:
+    valid_fns = {"SUM", "COUNT", "AVG", "MIN", "MAX"}
+    select_parts = []
+    for c in group_by:
+        select_parts.append(f'        "{c}"')
+    for m in metrics:
+        fn  = m.get("fn", "SUM").upper()
+        col = m.get("column", "")
+        out = m.get("output_name", "")
+        if fn not in valid_fns:
+            fn = "SUM"
+        if fn == "COUNT" and col in ("*", ""):
+            expr = "COUNT(*)"
+            out  = out or "row_count"
+        else:
+            expr = f'{fn}("{col}")'
+            out  = out or f'{col}_{fn.lower()}'
+        select_parts.append(f'        {expr} AS "{out}"')
+    select_str = ",\n".join(select_parts) or "        *"
+    group_str  = ""
+    if group_by:
+        group_str = "    GROUP BY " + ", ".join(f'"{c}"' for c in group_by) + "\n"
+    return (
+        f'with source as (\n'
+        f'    select * from analytics."{clean_model}"\n'
+        f'),\n'
+        f'aggregated as (\n'
+        f'    select\n'
+        f'{select_str}\n'
+        f'    from source\n'
+        f'{group_str}'
+        f')\n'
+        f'select * from aggregated\n'
+    )
+
+
+@app.post("/api/demo/upload")
+async def api_demo_upload(table: str = Form(...), file: UploadFile = File(...)) -> dict:
+    return await api_workflow_upload(table, file)
+
+
+@app.post("/api/demo/build-cleaning")
+def api_demo_build_cleaning(payload: _BuildCleanPayload) -> dict:
+    return api_build_clean(payload)
+
+
+@app.post("/api/demo/build-agg")
+def api_demo_build_agg(payload: _DemoBuildAggPayload) -> dict:
+    table = _safe_name(payload.table)
+    if not table:
+        raise HTTPException(status_code=400, detail="Invalid table name")
+    ts          = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    model_name  = f"agg_{table}_{ts}"
+    pipeline_id = f"agg_{table}_{ts}"
+    sql = _generate_agg_sql(
+        payload.clean_model, payload.group_by,
+        [m.model_dump() for m in payload.metrics],
+    )
+    model_dir = _DBT_MODELS_DIR / "acme"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / f"{model_name}.sql").write_text(sql)
+    pipeline_yaml = (
+        f"pipeline_id: {pipeline_id}\n"
+        f"description: Auto-generated aggregation pipeline for {payload.clean_model}\n"
+        f"tags: [generated, aggregation, {table}]\n\n"
+        f"schedule:\n  preset: \"@daily\"\n  retries: 1\n\n"
+        f"stages:\n"
+        f"  transformation:\n    type: dbt\n    select: {model_name}\n\n"
+        f"  validation:\n"
+        f"    - type: row_count\n      connection_id: postgres_default\n"
+        f"      table: analytics.{model_name}\n      min_rows: 1\n"
+    )
+    _CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
+    (_CONFIGS_DIR / f"{pipeline_id}.yaml").write_text(pipeline_yaml)
+    return {
+        "pipeline_id": pipeline_id,
+        "model_name":  model_name,
+        "airflow_url": f"http://localhost:8080/dags/{pipeline_id}/grid",
+        "sql_preview": sql,
+    }
+
+
+_DEMO_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DataFabrik — Customer Onboarding Demo</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh}
+.topbar{background:#1a1f2e;border-bottom:1px solid #2d3748;padding:14px 32px;display:flex;align-items:center;gap:14px}
+.logo{width:28px;height:28px;background:#3182ce;border-radius:6px;display:flex;align-items:center;justify-content:center}
+.topbar h1{font-size:1rem;font-weight:700}
+.back-link{margin-left:auto;font-size:.8rem;color:#63b3ed;text-decoration:none}
+.stepper{display:flex;align-items:center;max-width:860px;margin:28px auto 0;padding:0 24px}
+.stp{display:flex;align-items:center;gap:7px;font-size:.76rem;color:#4a5568;flex:1;min-width:0}
+.stp:last-child{flex:0;white-space:nowrap}
+.stp-c{width:26px;height:26px;border-radius:50%;background:#2d3748;border:2px solid #4a5568;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0;transition:all .3s}
+.stp.active .stp-c{background:#2b4c7e;border-color:#63b3ed;color:#90cdf4}
+.stp.done .stp-c{background:#276749;border-color:#48bb78;color:#9ae6b4}
+.stp-lbl{display:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(min-width:580px){.stp-lbl{display:inline}}
+.stp.active .stp-lbl{color:#90cdf4;font-weight:600}
+.stp.done .stp-lbl{color:#68d391}
+.stp-line{flex:1;height:2px;background:#2d3748;margin:0 6px;transition:background .3s;min-width:8px}
+.stp-line.done{background:#276749}
+.page{max-width:860px;margin:0 auto;padding:28px 24px 60px}
+.sec-head{margin-bottom:22px}
+.sec-title{font-size:1.25rem;font-weight:700;margin-bottom:5px}
+.sec-sub{color:#a0aec0;font-size:.87rem}
+.card{background:#1a1f2e;border:1px solid #2d3748;border-radius:10px;padding:20px 22px;margin-bottom:16px}
+.card-ttl{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#718096;margin-bottom:14px}
+label{font-size:.82rem;color:#a0aec0;display:block;margin-bottom:5px}
+input[type=text],input[type=date],select{width:100%;background:#0f1117;border:1px solid #2d3748;border-radius:6px;color:#e2e8f0;padding:8px 11px;font-size:.86rem;outline:none;transition:border-color .2s}
+input[type=text]:focus,input[type=date]:focus,select:focus{border-color:#63b3ed}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+.row3{display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:12px}
+.fg{display:flex;flex-direction:column;gap:5px}
+.drop{border:2px dashed #2d3748;border-radius:10px;padding:42px 24px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;position:relative}
+.drop:hover,.drop.over{border-color:#3182ce;background:rgba(49,130,206,.05)}
+.drop input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.drop-icon{font-size:2rem;margin-bottom:8px}
+.drop-txt{color:#718096;font-size:.87rem}
+.drop-txt b{color:#63b3ed}
+.fname{margin-top:10px;font-size:.8rem;color:#63b3ed}
+.col-tbl{width:100%;border-collapse:collapse;font-size:.82rem}
+.col-tbl th{color:#718096;font-weight:600;text-align:left;padding:7px 9px;border-bottom:1px solid #2d3748;font-size:.71rem;text-transform:uppercase}
+.col-tbl td{padding:8px 9px;border-bottom:1px solid #1e2535;vertical-align:middle}
+.col-tbl tr:last-child td{border-bottom:none}
+.col-tbl input[type=checkbox]{width:15px;height:15px;cursor:pointer;accent-color:#3182ce}
+.col-tbl select{padding:5px 8px;font-size:.79rem}
+.col-tbl input[type=text]{padding:5px 8px;font-size:.79rem}
+.samp{font-size:.73rem;color:#4a5568;font-style:italic}
+.tag{display:inline-block;background:#1a3a5c;color:#90cdf4;border-radius:4px;padding:2px 7px;font-size:.71rem;font-weight:600}
+.fr-row{display:flex;gap:7px;align-items:center;margin-bottom:7px}
+.fr-row select,.fr-row input{flex:1}
+.fr-row select.fr-op{flex:0;min-width:110px}
+.rm-btn{background:none;border:none;color:#fc8181;cursor:pointer;font-size:1rem;padding:4px 6px;flex-shrink:0}
+.add-btn{background:none;border:1px solid #2d3748;color:#63b3ed;border-radius:6px;padding:7px 14px;font-size:.81rem;cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:border-color .2s}
+.add-btn:hover{border-color:#63b3ed}
+.sql-box{background:#0a0d14;border:1px solid #2d3748;border-radius:8px;padding:15px 17px;font-family:"Fira Mono","Consolas",monospace;font-size:.79rem;color:#9ae6b4;white-space:pre;overflow-x:auto;max-height:260px;overflow-y:auto}
+.chk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:7px}
+.chk-item{display:flex;align-items:center;gap:8px;background:#0f1117;border:1px solid #2d3748;border-radius:6px;padding:8px 11px;font-size:.82rem;cursor:pointer;transition:border-color .2s}
+.chk-item:hover{border-color:#4a5568}
+.chk-item.sel{border-color:#3182ce;background:rgba(49,130,206,.08)}
+.chk-item input{width:14px;height:14px;cursor:pointer;accent-color:#3182ce}
+.mr-row{display:grid;grid-template-columns:1fr 90px 1fr 32px;gap:7px;align-items:center;margin-bottom:7px}
+.mr-row select,.mr-row input{font-size:.81rem;padding:6px 9px}
+.ok-banner{background:#1c4532;border:1px solid #276749;border-radius:10px;padding:16px 20px;display:flex;align-items:flex-start;gap:13px;margin-bottom:14px}
+.ok-icon{font-size:1.3rem;flex-shrink:0}
+.ok-title{font-weight:700;font-size:.95rem;color:#9ae6b4;margin-bottom:3px}
+.ok-sub{font-size:.81rem;color:#68d391}
+.af-link{display:inline-flex;align-items:center;gap:5px;color:#90cdf4;font-size:.81rem;text-decoration:none;margin-top:7px}
+.af-link:hover{text-decoration:underline}
+.btn{display:inline-flex;align-items:center;gap:7px;padding:9px 18px;border-radius:7px;font-size:.86rem;font-weight:600;cursor:pointer;border:none;transition:opacity .15s,transform .1s}
+.btn:active{transform:scale(.98)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn-primary{background:#3182ce;color:white}
+.btn-primary:hover:not(:disabled){background:#2b6cb0}
+.btn-ok{background:#276749;color:#9ae6b4}
+.btn-ghost{background:#1a1f2e;border:1px solid #2d3748;color:#a0aec0}
+.btn-ghost:hover{border-color:#4a5568;color:#e2e8f0}
+.nav-btns{display:flex;gap:10px;margin-top:22px;flex-wrap:wrap}
+.panel{display:none}.panel.active{display:block}
+.sp{display:inline-block;width:15px;height:15px;border:2px solid rgba(255,255,255,.3);border-top-color:white;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+.tc{position:fixed;top:18px;right:18px;z-index:9999;display:flex;flex-direction:column;gap:7px}
+.toast{padding:11px 16px;border-radius:8px;font-size:.83rem;font-weight:600;animation:si .2s ease}
+.toast.ok{background:#1c4532;color:#9ae6b4;border:1px solid #276749}
+.toast.err{background:#742a2a;color:#feb2b2;border:1px solid #9b2c2c}
+@keyframes si{from{transform:translateX(40px);opacity:0}to{transform:translateX(0);opacity:1}}
+</style>
+</head>
+<body>
+<div class="tc" id="tc"></div>
+
+<div class="topbar">
+  <div class="logo"><svg viewBox="0 0 16 16" fill="none"><rect width="16" height="16" rx="3" fill="#3182ce"/><path d="M4 8h8M8 4v8" stroke="white" stroke-width="1.8" stroke-linecap="round"/></svg></div>
+  <h1>DataFabrik</h1>
+  <span style="color:#4a5568;font-size:.84rem">Customer Onboarding Demo</span>
+  <a class="back-link" href="/">&#8592; Portal</a>
+</div>
+
+<div class="stepper">
+  <div class="stp active" id="st1"><div class="stp-c" id="sc1">1</div><span class="stp-lbl">Upload CSV</span></div>
+  <div class="stp-line" id="sl1"></div>
+  <div class="stp" id="st2"><div class="stp-c" id="sc2">2</div><span class="stp-lbl">Configure Cleaning</span></div>
+  <div class="stp-line" id="sl2"></div>
+  <div class="stp" id="st3"><div class="stp-c" id="sc3">3</div><span class="stp-lbl">Build Cleaning</span></div>
+  <div class="stp-line" id="sl3"></div>
+  <div class="stp" id="st4"><div class="stp-c" id="sc4">4</div><span class="stp-lbl">Configure Aggregation</span></div>
+  <div class="stp-line" id="sl4"></div>
+  <div class="stp" id="st5"><div class="stp-c" id="sc5">5</div><span class="stp-lbl">Build Aggregation</span></div>
+</div>
+
+<div class="page">
+
+<!-- ── Step 1: Upload ── -->
+<div class="panel active" id="panel1">
+  <div class="sec-head">
+    <div class="sec-title">Upload Raw Data</div>
+    <div class="sec-sub">Start by uploading a CSV file. Columns and data types are detected automatically.</div>
+  </div>
+  <div class="card">
+    <div class="card-ttl">CSV File</div>
+    <div class="drop" id="dz">
+      <input type="file" id="fi" accept=".csv">
+      <div class="drop-icon">&#128194;</div>
+      <div class="drop-txt">Drag &amp; drop a CSV file, or <b>browse to upload</b></div>
+      <div class="fname" id="fname"></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-ttl">Table Settings</div>
+    <div class="fg">
+      <label>Table Name *</label>
+      <input type="text" id="tname" placeholder="e.g. acme_orders">
+    </div>
+  </div>
+  <div class="card" id="up-preview" style="display:none">
+    <div class="card-ttl">Detected Columns</div>
+    <table class="col-tbl">
+      <thead><tr><th>Column</th><th>Detected Type</th><th>Sample Values</th></tr></thead>
+      <tbody id="prev-body"></tbody>
+    </table>
+  </div>
+  <div class="nav-btns">
+    <button class="btn btn-primary" id="up-btn" onclick="doUpload()">Upload &amp; Detect Columns &#8594;</button>
+  </div>
+</div>
+
+<!-- ── Step 2: Configure Cleaning ── -->
+<div class="panel" id="panel2">
+  <div class="sec-head">
+    <div class="sec-title">Configure Data Cleaning</div>
+    <div class="sec-sub">Select columns, set output types, and add row filters. No code required.</div>
+  </div>
+  <div class="card">
+    <div class="card-ttl">Pipeline Info</div>
+    <div class="row2">
+      <div class="fg"><label>Pipeline Name *</label><input type="text" id="p-name" placeholder="e.g. clean_acme_orders"></div>
+      <div class="fg"><label>Schedule</label>
+        <select id="p-sched">
+          <option value="@daily">@daily — once a day</option>
+          <option value="@hourly">@hourly — once an hour</option>
+          <option value="@weekly">@weekly — once a week</option>
+          <option value="@once">@once — manual only</option>
+        </select>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-ttl">Columns &amp; Output Types</div>
+    <table class="col-tbl" id="col-tbl">
+      <thead><tr><th>Include</th><th>Column</th><th>Output Type</th><th>Rename To</th><th>Samples</th></tr></thead>
+      <tbody id="col-body"></tbody>
+    </table>
+  </div>
+  <div class="card">
+    <div class="card-ttl">Row Filters (WHERE conditions)</div>
+    <div id="flist"></div>
+    <button class="add-btn" onclick="addFilter()">+ Add Filter</button>
+  </div>
+  <div class="card">
+    <div class="card-ttl">Date Range Filter</div>
+    <div class="row3">
+      <div class="fg"><label>Date Column</label><select id="d-col"><option value="">&#8212; none &#8212;</option></select></div>
+      <div class="fg"><label>From</label><input type="date" id="d-from"></div>
+      <div class="fg"><label>To</label><input type="date" id="d-to"></div>
+    </div>
+  </div>
+  <div class="nav-btns">
+    <button class="btn btn-ghost" onclick="goto(1)">&#8592; Back</button>
+    <button class="btn btn-primary" onclick="goto(3)">Preview SQL &#8594;</button>
+  </div>
+</div>
+
+<!-- ── Step 3: Build Cleaning Pipeline ── -->
+<div class="panel" id="panel3">
+  <div class="sec-head">
+    <div class="sec-title">Build Cleaning Pipeline</div>
+    <div class="sec-sub">Review the generated SQL, then click Build to register the pipeline in Airflow.</div>
+  </div>
+  <div class="card">
+    <div class="card-ttl">Generated SQL</div>
+    <div class="sql-box" id="clean-sql">&#8212;</div>
+  </div>
+  <div id="clean-ok" style="display:none">
+    <div class="ok-banner">
+      <div class="ok-icon">&#9989;</div>
+      <div>
+        <div class="ok-title" id="clean-ok-title">Pipeline created!</div>
+        <div class="ok-sub" id="clean-ok-sub"></div>
+        <a class="af-link" id="clean-af" href="#" target="_blank">Open in Airflow &#8599;</a>
+      </div>
+    </div>
+  </div>
+  <div class="nav-btns">
+    <button class="btn btn-ghost" onclick="goto(2)">&#8592; Back</button>
+    <button class="btn btn-primary" id="build-clean-btn" onclick="doBuildCleaning()">&#128296; Build Cleaning Pipeline</button>
+    <button class="btn btn-ok" id="to-agg-btn" style="display:none" onclick="goto(4)">Continue to Aggregation &#8594;</button>
+  </div>
+</div>
+
+<!-- ── Step 4: Configure Aggregation ── -->
+<div class="panel" id="panel4">
+  <div class="sec-head">
+    <div class="sec-title">Configure Aggregation Pipeline</div>
+    <div class="sec-sub">Choose how to group and summarise the cleaned data. No code required.</div>
+  </div>
+  <div class="card">
+    <div class="card-ttl">Group By Columns</div>
+    <div class="chk-grid" id="gb-grid"></div>
+  </div>
+  <div class="card">
+    <div class="card-ttl">Metrics</div>
+    <div id="mlist"></div>
+    <button class="add-btn" onclick="addMetric()">+ Add Metric</button>
+  </div>
+  <div class="nav-btns">
+    <button class="btn btn-ghost" onclick="goto(3)">&#8592; Back</button>
+    <button class="btn btn-primary" onclick="goto(5)">Preview Aggregation SQL &#8594;</button>
+  </div>
+</div>
+
+<!-- ── Step 5: Build Aggregation Pipeline ── -->
+<div class="panel" id="panel5">
+  <div class="sec-head">
+    <div class="sec-title">Build Aggregation Pipeline</div>
+    <div class="sec-sub">Review the aggregation SQL and click Build to register it in Airflow.</div>
+  </div>
+  <div class="card">
+    <div class="card-ttl">Generated Aggregation SQL</div>
+    <div class="sql-box" id="agg-sql">&#8212;</div>
+  </div>
+  <div id="agg-ok" style="display:none">
+    <div class="ok-banner">
+      <div class="ok-icon">&#127881;</div>
+      <div>
+        <div class="ok-title" id="agg-ok-title">Aggregation pipeline created!</div>
+        <div class="ok-sub" id="agg-ok-sub"></div>
+        <a class="af-link" id="agg-af" href="#" target="_blank">Open in Airflow &#8599;</a>
+      </div>
+    </div>
+    <div class="ok-banner" style="background:#1a2744;border-color:#2b4c7e">
+      <div class="ok-icon">&#128640;</div>
+      <div>
+        <div class="ok-title" style="color:#90cdf4">Demo Complete!</div>
+        <div class="ok-sub" style="color:#63b3ed">Both pipelines are registered in Airflow and ready to run.</div>
+        <a class="af-link" id="sum-clean-af" href="#" target="_blank" style="display:block;margin-top:4px">Cleaning Pipeline in Airflow &#8599;</a>
+        <a class="af-link" id="sum-agg-af" href="#" target="_blank" style="display:block;margin-top:4px">Aggregation Pipeline in Airflow &#8599;</a>
+      </div>
+    </div>
+  </div>
+  <div class="nav-btns">
+    <button class="btn btn-ghost" onclick="goto(4)">&#8592; Back</button>
+    <button class="btn btn-primary" id="build-agg-btn" onclick="doBuildAgg()">&#128296; Build Aggregation Pipeline</button>
+    <button class="btn btn-ghost" id="restart-btn" style="display:none" onclick="location.reload()">&#8635; Start New Demo</button>
+  </div>
+</div>
+
+</div>
+
+<script>
+const TYPES = ['TEXT','INTEGER','NUMERIC','DATE','TIMESTAMP','BOOLEAN'];
+const OPS   = ['=','!=','>','>=','<','<=','LIKE','IS NULL','IS NOT NULL'];
+const FNS   = ['SUM','COUNT','AVG','MIN','MAX'];
+
+const S = { table:'', columns:[], colConfig:[], cleanModel:'', cleanAirflow:'' };
+
+// ── Stepper ────────────────────────────────────────────────────────────────
+function goto(n) {
+  if (n === 2) renderColConfig();
+  if (n === 3) renderCleanSql();
+  if (n === 4) renderAggConfig();
+  if (n === 5) renderAggSql();
+  for (let i = 1; i <= 5; i++) {
+    document.getElementById('panel'+i).className = 'panel'+(i===n?' active':'');
+    const st = document.getElementById('st'+i);
+    st.className = 'stp'+(i<n?' done':i===n?' active':'');
+    document.getElementById('sc'+i).textContent = i<n ? '&#10003;' : i;
+    if (i < 5) document.getElementById('sl'+i).className = 'stp-line'+(i<n?' done':'');
+  }
+  window.scrollTo(0,0);
+}
+
+// ── Toast ──────────────────────────────────────────────────────────────────
+function toast(msg, type) {
+  const tc = document.getElementById('tc');
+  const t = document.createElement('div');
+  t.className = 'toast '+(type||'ok');
+  t.textContent = (type==='err'?'&#10007; ':'&#10003; ')+msg;
+  tc.appendChild(t);
+  setTimeout(()=>t.remove(), 4000);
+}
+
+// ── Step 1: Upload ─────────────────────────────────────────────────────────
+const dz = document.getElementById('dz');
+const fi = document.getElementById('fi');
+dz.addEventListener('dragover', e=>{e.preventDefault();dz.classList.add('over');});
+dz.addEventListener('dragleave', ()=>dz.classList.remove('over'));
+dz.addEventListener('drop', e=>{
+  e.preventDefault(); dz.classList.remove('over');
+  const f = e.dataTransfer.files[0];
+  if(f){fi.files=e.dataTransfer.files; document.getElementById('fname').textContent='&#128196; '+f.name;}
+});
+fi.addEventListener('change', ()=>{if(fi.files[0]) document.getElementById('fname').textContent='&#128196; '+fi.files[0].name;});
+
+async function doUpload() {
+  const file = fi.files[0], tname = document.getElementById('tname').value.trim();
+  if(!file){toast('Select a CSV file','err');return;}
+  if(!tname){toast('Enter a table name','err');return;}
+  const btn = document.getElementById('up-btn');
+  btn.disabled=true; btn.innerHTML='<span class="sp"></span> Uploading&#8230;';
+  const fd = new FormData(); fd.append('file',file); fd.append('table',tname);
+  try{
+    const r = await fetch('/api/demo/upload',{method:'POST',body:fd});
+    const j = await r.json();
+    if(!r.ok){toast(j.detail||'Upload failed','err');return;}
+    S.table = j.table_name; S.columns = j.columns;
+    S.colConfig = j.columns.map(c=>({name:c.name,type:c.type,include:true,output_name:''}));
+    const tbody = document.getElementById('prev-body'); tbody.innerHTML='';
+    j.columns.forEach(c=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML='<td><b>'+c.name+'</b></td><td><span class="tag">'+c.type+'</span></td><td class="samp">'+((c.samples||[]).join(', '))+'</td>';
+      tbody.appendChild(tr);
+    });
+    document.getElementById('up-preview').style.display='block';
+    document.getElementById('p-name').value='clean_'+j.table_name;
+    toast('Uploaded '+j.rows+' rows, '+j.columns.length+' columns');
+    setTimeout(()=>goto(2), 500);
+  }catch(e){toast('Error: '+e.message,'err');}
+  finally{btn.disabled=false; btn.innerHTML='Upload &amp; Detect Columns &#8594;';}
+}
+
+// ── Step 2: Column Config ──────────────────────────────────────────────────
+function renderColConfig() {
+  const tbody = document.getElementById('col-body'); tbody.innerHTML='';
+  S.colConfig.forEach((col,i)=>{
+    const topts = TYPES.map(t=>'<option'+(t===col.type?' selected':'')+'>'+t+'</option>').join('');
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td><input type="checkbox" '+(col.include?'checked':'')+' onchange="S.colConfig['+i+'].include=this.checked"></td>'
+      +'<td><b>'+col.name+'</b></td>'
+      +'<td><select onchange="S.colConfig['+i+'].type=this.value">'+topts+'</select></td>'
+      +'<td><input type="text" placeholder="'+col.name+'" value="'+col.output_name+'" onchange="S.colConfig['+i+'].output_name=this.value" style="max-width:120px"></td>'
+      +'<td class="samp">'+((S.columns[i]?.samples||[]).join(', '))+'</td>';
+    tbody.appendChild(tr);
+  });
+  // Populate date column dropdown
+  const ds = document.getElementById('d-col'); ds.innerHTML='<option value="">&#8212; none &#8212;</option>';
+  S.colConfig.forEach(c=>{
+    if(c.type==='DATE'||c.type==='TIMESTAMP'){const o=document.createElement('option');o.value=c.name;o.textContent=c.name;ds.appendChild(o);}
+  });
+}
+
+let _fc = 0;
+function addFilter() {
+  _fc++;
+  const id='fr'+_fc;
+  const copts = S.colConfig.map(c=>'<option>'+c.name+'</option>').join('');
+  const oopts = OPS.map(o=>'<option>'+o+'</option>').join('');
+  const div=document.createElement('div'); div.className='fr-row'; div.id=id;
+  div.innerHTML='<select class="fc">'+copts+'</select>'
+    +'<select class="fo fr-op">'+oopts+'</select>'
+    +'<input type="text" class="fv" placeholder="value">'
+    +'<button class="rm-btn" onclick="document.getElementById(\''+id+'\').remove()">&#10005;</button>';
+  document.getElementById('flist').appendChild(div);
+}
+
+function getFilters() {
+  return Array.from(document.querySelectorAll('#flist .fr-row')).map(r=>({
+    column: r.querySelector('.fc').value,
+    operator: r.querySelector('.fo').value,
+    value: r.querySelector('.fv').value,
+  }));
+}
+
+// ── Step 3: Clean SQL Preview ──────────────────────────────────────────────
+function renderCleanSql() {
+  const cols = S.colConfig, filters = getFilters();
+  const dcol=document.getElementById('d-col').value, dfrom=document.getElementById('d-from').value, dto=document.getElementById('d-to').value;
+  const allF=[...filters];
+  if(dcol&&dfrom) allF.push({column:dcol,operator:'>=',value:dfrom});
+  if(dcol&&dto)   allF.push({column:dcol,operator:'<=',value:dto});
+  const sel=cols.filter(c=>c.include).map(c=>{
+    const out=c.output_name||c.name;
+    if(c.type==='TEXT') return '    trim("'+c.name+'") AS "'+out+'"';
+    if(c.type==='NUMERIC') return '    round("'+c.name+'"::NUMERIC, 2) AS "'+out+'"';
+    return '    "'+c.name+'"::'+c.type+' AS "'+out+'"';
+  });
+  const wh=allF.filter(f=>f.column).map(f=>{
+    if(f.operator==='IS NULL'||f.operator==='IS NOT NULL') return '"'+f.column+'" '+f.operator;
+    if(f.operator==='LIKE') return '"'+f.column+'" LIKE \'%'+f.value+'%\'';
+    return '"'+f.column+'" '+f.operator+' \''+f.value+'\'';
+  });
+  let sql='with source as (\\n    select * from raw."'+S.table+'"\\n),\\ncleaned as (\\n    select\\n';
+  sql+=(sel.join(',\\n')||'        *')+'\\n    from source';
+  if(wh.length) sql+='\\n    WHERE '+wh.join('\\n      AND ');
+  sql+='\\n)\\nselect * from cleaned';
+  document.getElementById('clean-sql').textContent=sql;
+}
+
+async function doBuildCleaning() {
+  const btn=document.getElementById('build-clean-btn');
+  btn.disabled=true; btn.innerHTML='<span class="sp"></span> Building&#8230;';
+  const filters=getFilters();
+  const dcol=document.getElementById('d-col').value, dfrom=document.getElementById('d-from').value, dto=document.getElementById('d-to').value;
+  if(dcol&&dfrom) filters.push({column:dcol,operator:'>=',value:dfrom});
+  if(dcol&&dto)   filters.push({column:dcol,operator:'<=',value:dto});
+  try{
+    const r=await fetch('/api/demo/build-cleaning',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({table:S.table,columns:S.colConfig,filters})});
+    const j=await r.json();
+    if(!r.ok){toast(j.detail||'Build failed','err');return;}
+    S.cleanModel=j.model_name; S.cleanAirflow=j.airflow_url;
+    document.getElementById('clean-ok-title').textContent='Pipeline "'+j.pipeline_id+'" created!';
+    document.getElementById('clean-ok-sub').textContent='Model: '+j.model_name;
+    document.getElementById('clean-af').href=j.airflow_url;
+    document.getElementById('clean-ok').style.display='block';
+    document.getElementById('to-agg-btn').style.display='inline-flex';
+    toast('Cleaning pipeline built!');
+  }catch(e){toast('Error: '+e.message,'err');}
+  finally{btn.disabled=false; btn.innerHTML='&#128296; Build Cleaning Pipeline';}
+}
+
+// ── Step 4: Aggregation Config ─────────────────────────────────────────────
+let _mc=0;
+function renderAggConfig() {
+  const grid=document.getElementById('gb-grid'); grid.innerHTML='';
+  S.colConfig.filter(c=>c.include).forEach(c=>{
+    const name=c.output_name||c.name;
+    const div=document.createElement('div'); div.className='chk-item'; div.id='gbi-'+name;
+    div.innerHTML='<input type="checkbox" id="gbc-'+name+'" value="'+name+'"><label for="gbc-'+name+'" style="cursor:pointer;margin:0">'+name+'</label>';
+    div.querySelector('input').addEventListener('change',e=>div.classList.toggle('sel',e.target.checked));
+    grid.appendChild(div);
+  });
+  if(!document.querySelector('#mlist .mr-row')) addMetric();
+}
+
+function addMetric() {
+  _mc++;
+  const id='mr'+_mc;
+  const cols=S.colConfig.filter(c=>c.include).map(c=>c.output_name||c.name);
+  const copts=['*',...cols].map(c=>'<option value="'+c+'">'+(c==='*'?'* (all rows)':c)+'</option>').join('');
+  const fopts=FNS.map(f=>'<option>'+f+'</option>').join('');
+  const div=document.createElement('div'); div.className='mr-row'; div.id=id;
+  div.innerHTML='<select class="mc">'+copts+'</select>'
+    +'<select class="mf">'+fopts+'</select>'
+    +'<input type="text" class="mo" placeholder="output name (optional)">'
+    +'<button class="rm-btn" onclick="document.getElementById(\''+id+'\').remove()">&#10005;</button>';
+  document.getElementById('mlist').appendChild(div);
+}
+
+function getGroupBy() {return Array.from(document.querySelectorAll('#gb-grid input:checked')).map(i=>i.value);}
+function getMetrics() {
+  return Array.from(document.querySelectorAll('#mlist .mr-row')).map(r=>({
+    column:r.querySelector('.mc').value, fn:r.querySelector('.mf').value, output_name:r.querySelector('.mo').value
+  }));
+}
+
+// ── Step 5: Agg SQL Preview ────────────────────────────────────────────────
+function renderAggSql() {
+  const gb=getGroupBy(), mx=getMetrics();
+  const parts=[];
+  gb.forEach(c=>parts.push('    "'+c+'"'));
+  mx.forEach(m=>{
+    const out=m.output_name||(m.column==='*'?'row_count':m.column+'_'+m.fn.toLowerCase());
+    const expr=(m.fn==='COUNT'&&m.column==='*')?'COUNT(*)':m.fn+'("'+m.column+'")';
+    parts.push('    '+expr+' AS "'+out+'"');
+  });
+  let sql='with source as (\\n    select * from analytics."'+S.cleanModel+'"\\n),\\naggregated as (\\n    select\\n';
+  sql+=(parts.join(',\\n')||'        *')+'\\n    from source';
+  if(gb.length) sql+='\\n    GROUP BY '+gb.map(c=>'"'+c+'"').join(', ');
+  sql+='\\n)\\nselect * from aggregated';
+  document.getElementById('agg-sql').textContent=sql;
+}
+
+async function doBuildAgg() {
+  const btn=document.getElementById('build-agg-btn');
+  const gb=getGroupBy(), mx=getMetrics();
+  if(!gb.length&&!mx.length){toast('Add at least one group-by or metric','err');return;}
+  btn.disabled=true; btn.innerHTML='<span class="sp"></span> Building&#8230;';
+  try{
+    const r=await fetch('/api/demo/build-agg',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({table:S.table,clean_model:S.cleanModel,group_by:gb,metrics:mx})});
+    const j=await r.json();
+    if(!r.ok){toast(j.detail||'Build failed','err');return;}
+    document.getElementById('agg-ok-title').textContent='Pipeline "'+j.pipeline_id+'" created!';
+    document.getElementById('agg-ok-sub').textContent='Model: '+j.model_name;
+    document.getElementById('agg-af').href=j.airflow_url;
+    document.getElementById('sum-agg-af').href=j.airflow_url;
+    document.getElementById('sum-clean-af').href=S.cleanAirflow;
+    document.getElementById('agg-ok').style.display='block';
+    document.getElementById('restart-btn').style.display='inline-flex';
+    toast('Aggregation pipeline built!');
+  }catch(e){toast('Error: '+e.message,'err');}
+  finally{btn.disabled=false; btn.innerHTML='&#128296; Build Aggregation Pipeline';}
+}
+</script>
+<script>if(location.search.includes('embed=1'))document.querySelectorAll('a[href="/"]').forEach(e=>e.style.display='none');</script>
+</body></html>"""
+
+
+@app.get("/demo", response_class=HTMLResponse)
+def demo_page() -> str:
+    """Unified customer onboarding demo wizard."""
+    return _DEMO_HTML
 
 
 _UPLOAD_HTML = (
