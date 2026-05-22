@@ -2170,7 +2170,7 @@ _WORKFLOW_HTML = (
     'document.getElementById("dz-fsize").textContent=(f.size/1024).toFixed(1)+" KB";'
     'dz.classList.add("done");'
     'const inp=document.getElementById("tbl-inp");'
-    'if(!inp.value)inp.value=f.name.replace(/\\.csv$/i,"").replace(/[^a-z0-9]+/gi,"_").toLowerCase();'
+    'inp.value=f.name.replace(/\\.csv$/i,"").replace(/[^a-z0-9]+/gi,"_").toLowerCase();'
     'checkStep1();}'
     'function checkStep1(){'
     'const t=document.getElementById("tbl-inp").value.trim();'
