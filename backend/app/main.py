@@ -1833,14 +1833,18 @@ async def api_workflow_upload(table: str = Form(...), file: UploadFile = File(..
         for row in rows:
             data = {_safe_name(k): (v or "").strip() or None for k, v in row.items()}
             conn.execute(text(f'INSERT INTO raw."{table_name}" ({col_list}) VALUES ({placeholders})'), data)
-    # Step 2: upload full file to MinIO for reference
+    # Step 2: upload sampled rows to MinIO
     ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     s3_bucket = "datafabrik-raw"
     s3_key    = f"wizard/{table_name}/{table_name}_{ts}.csv"
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
     _s3_client().put_object(
         Bucket=s3_bucket,
         Key=s3_key,
-        Body=content,
+        Body=buf.getvalue().encode("utf-8"),
         ContentType="text/csv",
     )
     return {
@@ -2601,7 +2605,7 @@ _UPLOAD_HTML = (
     'const sampledNote=j.sampled?` (sampled ${j.rows.toLocaleString()} of ${j.total_rows.toLocaleString()})`:` — ${j.rows.toLocaleString()} rows`;'
     'document.getElementById("upload-locs").innerHTML='
     '\'<div class="upload-loc">&#10003; Postgres: <code>\'+j.postgres_table+\'</code>\'+sampledNote+\'</div>\''
-    '+\'<div class="upload-loc">&#10003; MinIO: <code>\'+j.s3_bucket+\'/\'+j.s3_key+\'</code> (full file)</div>\';'
+    '+\'<div class="upload-loc">&#10003; MinIO: <code>\'+j.s3_bucket+\'/\'+j.s3_key+\'</code></div>\';'
     'window.parent.postMessage({type:"datafabrik_upload",table_name:j.table_name,rows:j.rows,'
     'columns:j.columns,postgres_table:j.postgres_table,s3_bucket:j.s3_bucket,s3_key:j.s3_key},"*");'
     '}else{'
