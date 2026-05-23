@@ -13,6 +13,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__WEBSERVER__X_FRAME_ENABLED: "False"
     AIRFLOW__WEBSERVER__WTF_CSRF_ENABLED: "False"
     AIRFLOW__WEBSERVER__BASE_URL: "http://localhost:8082"
+    DATABASE_URL: postgresql+psycopg2://datafabrik:datafabrik@postgres:5432/datafabrik
     AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
     AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
     AWS_ENDPOINT_URL: http://minio:9000
