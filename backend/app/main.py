@@ -236,10 +236,6 @@ def api_trigger_pipeline(dag_id: str) -> dict:
 _RESTART_CONTAINERS = [
     "datafabrik-airflow-webserver",
     "datafabrik-airflow-scheduler",
-    "datafabrik-metabase",
-    "datafabrik-minio",
-    "datafabrik-nginx-proxy",
-    "datafabrik-presto",
 ]
 
 _HEALTH_CHECKS: dict[str, str] = {
@@ -577,7 +573,7 @@ select.form-control{cursor:pointer}
     <div class="sec-header">
       <h2>DataFabrik Portal</h2>
       <button class="btn btn-ghost btn-sm" onclick="checkHealth()" id="health-btn">↻ Check Services</button>
-      <button class="btn btn-danger btn-sm" onclick="restartServices()" id="restart-btn">🔄 Restart Services</button>
+      <button class="btn btn-danger btn-sm" onclick="restartServices()" id="restart-btn">🔄 Restart Airflow</button>
       <button class="btn btn-ghost btn-sm" onclick="openAllTools()">🔑 Open All Tools</button>
       <span class="sub" id="home-ts"></span>
     </div>
@@ -941,7 +937,7 @@ async function checkHealth() {
 }
 
 async function restartServices() {
-  if (!confirm('Restart Airflow, Metabase, MinIO, Nginx, and Presto?\\n\\nThey will be back in ~30 seconds.')) return;
+  if (!confirm('Restart Airflow webserver and scheduler?\\n\\nAirflow will be back in ~30 seconds.')) return;
   const btn = document.getElementById('restart-btn');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Restarting…'; }
   try {
@@ -951,7 +947,7 @@ async function restartServices() {
   } catch(e) {
     toast('Restart failed: ' + e.message, 'err');
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '🔄 Restart Services'; }
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 Restart Airflow'; }
   }
 }
 
