@@ -198,7 +198,7 @@ def api_trigger_pipeline(dag_id: str) -> dict:
     )
     # Retry up to 6 times (18 s) while the scheduler loads the DagBag
     last: dict = {}
-    for attempt in range(6):
+    for _ in range(6):
         resp = _requests.post(
             f"{AIRFLOW_URL}/api/v1/dags/{dag_id}/dagRuns",
             auth=(AIRFLOW_USER, AIRFLOW_PASS),
@@ -1944,6 +1944,57 @@ def api_build_agg(payload: _BuildAggPayload) -> dict:
     }
 
 
+class _ProcessPayload(BaseModel):
+    table: str
+    columns: list[_ColConfig]
+    filters: list[_FilterConfig] = []
+    group_by: list[str] = []
+    metrics: list[_AggMetric] = []
+
+
+@app.post("/api/workflow/process")
+def api_process(payload: _ProcessPayload) -> dict:
+    """Clean, aggregate, and load data directly into Postgres — no Airflow or dbt."""
+    table = _safe_name(payload.table)
+    if not table:
+        raise HTTPException(status_code=400, detail="Invalid table name")
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    cols    = [c.model_dump() for c in payload.columns]
+    filters = [f.model_dump() for f in payload.filters]
+
+    clean_name = f"clean_{table}_{ts}"
+    clean_sql  = _generate_clean_sql(table, cols, filters)
+    with engine.begin() as conn:
+        conn.execute(text("CREATE SCHEMA IF NOT EXISTS analytics"))
+        conn.execute(text(f'DROP TABLE IF EXISTS analytics."{clean_name}"'))
+        conn.execute(text(f'CREATE TABLE analytics."{clean_name}" AS\n{clean_sql}'))
+        clean_rows = conn.execute(text(f'SELECT COUNT(*) FROM analytics."{clean_name}"')).scalar()
+
+    result: dict = {"clean_table": clean_name, "clean_rows": clean_rows,
+                    "agg_table": None, "agg_rows": None}
+
+    if payload.metrics:
+        agg_name = f"agg_{table}_{ts}"
+        agg_sql  = _generate_agg_sql(
+            clean_name, payload.group_by,
+            [m.model_dump() for m in payload.metrics],
+        )
+        with engine.begin() as conn:
+            conn.execute(text(f'DROP TABLE IF EXISTS analytics."{agg_name}"'))
+            conn.execute(text(f'CREATE TABLE analytics."{agg_name}" AS\n{agg_sql}'))
+            agg_rows = conn.execute(text(f'SELECT COUNT(*) FROM analytics."{agg_name}"')).scalar()
+        result["agg_table"] = agg_name
+        result["agg_rows"]  = agg_rows
+
+    final = result["agg_table"] or clean_name
+    with engine.connect() as conn:
+        rs = conn.execute(text(f'SELECT * FROM analytics."{final}" LIMIT 20'))
+        result["preview"] = {"columns": list(rs.keys()), "rows": [list(r) for r in rs.fetchall()]}
+
+    return result
+
+
 _WORKFLOW_HTML = (
     '<!DOCTYPE html><html lang="en"><head>'
     '<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -2064,11 +2115,9 @@ _WORKFLOW_HTML = (
     '<div class="si-sep"></div>'
     '<div class="si" id="si2"><div class="si-circle">2</div>Configure Cleaning</div>'
     '<div class="si-sep"></div>'
-    '<div class="si" id="si3"><div class="si-circle">3</div>Build Cleaning</div>'
+    '<div class="si" id="si3"><div class="si-circle">3</div>Configure Aggregation</div>'
     '<div class="si-sep"></div>'
-    '<div class="si" id="si4"><div class="si-circle">4</div>Configure Aggregation</div>'
-    '<div class="si-sep"></div>'
-    '<div class="si" id="si5"><div class="si-circle">5</div>Build Aggregation</div>'
+    '<div class="si" id="si4"><div class="si-circle">4</div>Results</div>'
     '</div>'
     '<div id="p1" class="panel active">'
     '<div class="panel-head"><h2>Upload your data</h2>'
@@ -2111,36 +2160,13 @@ _WORKFLOW_HTML = (
     '<div class="no-filters" id="no-filters">No filters — all rows will be included</div>'
     '</div>'
     '<div class="panel-footer">'
-    '<button class="btn btn-ghost" onclick="goStep(1)">← Back</button>'
-    '<button class="btn btn-primary" id="s2-btn" onclick="doBuild()">Build Cleaning Pipeline →</button>'
-    '<div id="s2-status"></div>'
+    '<button class="btn btn-ghost" onclick="goStep(1)">&#8592; Back</button>'
+    '<button class="btn btn-primary" onclick="renderStep3();goStep(3)">Next: Configure Aggregation &#8594;</button>'
     '</div>'
     '</div>'
     '<div id="p3" class="panel">'
-    '<div class="card">'
-    '<div class="success-block">'
-    '<span class="s-icon">✅</span>'
-    '<h2>Cleaning Pipeline Created</h2>'
-    '<div class="pid" id="p3-pid"></div>'
-    '<div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:8px">'
-    '<button class="btn btn-primary" id="run-btn" onclick="runPipeline()">▶ Run Now</button>'
-    '<a class="btn btn-ghost" id="p3-link" href="#" target="_blank">Open in Airflow ↗</a>'
-    '</div>'
-    '<div id="run-status" style="font-size:.85rem;margin-top:6px"></div>'
-    '</div>'
-    '</div>'
-    '<div class="card">'
-    '<div class="section-title">Generated dbt SQL</div>'
-    '<div class="sql-block" id="p3-sql"></div>'
-    '</div>'
-    '<div class="panel-footer" style="justify-content:center;padding-top:16px;border-top:1px solid #2d3748;margin-top:8px">'
-    '<button class="btn btn-ghost" onclick="goStep(2)">&#8592; Back</button>'
-    '<button class="btn btn-primary" onclick="renderStep4();goStep(4)">Continue to Aggregation &#8594;</button>'
-    '</div>'
-    '</div>'
-    '<div id="p4" class="panel">'
     '<div class="panel-head"><h2>Configure Aggregation</h2>'
-    '<p>Choose columns to group by, then define the metrics you want to compute.</p></div>'
+    '<p>Optional — choose columns to group by and define metrics. Skip by clicking Process &amp; Load without adding any metrics.</p></div>'
     '<div class="card">'
     '<div class="section-title">Group By Columns</div>'
     '<div class="chk-grid" id="gb-grid"></div>'
@@ -2150,32 +2176,29 @@ _WORKFLOW_HTML = (
     '<button class="btn-link" onclick="addMetric()">+ Add metric</button>'
     '</div>'
     '<div id="metric-list"></div>'
-    '<div id="no-metrics" style="font-size:.8rem;color:#4a5568;padding:10px 0">No metrics — add at least one</div>'
+    '<div id="no-metrics" style="font-size:.8rem;color:#4a5568;padding:10px 0">No metrics — cleaning output will be loaded as-is</div>'
     '</div>'
     '<div class="panel-footer">'
-    '<button class="btn btn-ghost" onclick="goStep(3)">&#8592; Back</button>'
-    '<button class="btn btn-primary" id="s4-btn" onclick="doBuildAgg()">Build Aggregation Pipeline &#8594;</button>'
-    '<div id="s4-status"></div>'
+    '<button class="btn btn-ghost" onclick="goStep(2)">&#8592; Back</button>'
+    '<button class="btn btn-primary" id="s3-btn" onclick="doProcess()">Process &amp; Load &#8594;</button>'
+    '<div id="s3-status"></div>'
     '</div>'
     '</div>'
-    '<div id="p5" class="panel">'
+    '<div id="p4" class="panel">'
     '<div class="card">'
     '<div class="success-block">'
-    '<span class="s-icon">&#127881;</span>'
-    '<h2>All Pipelines Created!</h2>'
-    '<div class="pid" id="p5-pid"></div>'
-    '<div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:8px">'
-    '<a class="btn btn-ghost" id="p5-clean-link" href="#" target="_blank">Cleaning DAG &#8599;</a>'
-    '<a class="btn btn-primary" id="p5-agg-link" href="#" target="_blank">Aggregation DAG &#8599;</a>'
-    '</div>'
+    '<span class="s-icon">&#9989;</span>'
+    '<h2>Data Loaded!</h2>'
+    '<div id="r-summary" style="font-size:.85rem;color:#a0aec0;margin:10px 0 20px"></div>'
+    '<a class="btn btn-primary" href="http://localhost:3001" target="_blank">View in Metabase &#8599;</a>'
     '</div>'
     '</div>'
     '<div class="card">'
-    '<div class="section-title">Aggregation dbt SQL</div>'
-    '<div class="sql-block" id="p5-sql"></div>'
+    '<div class="section-title">Data Preview</div>'
+    '<div class="col-wrap" id="r-preview"></div>'
     '</div>'
     '<div class="panel-footer" style="justify-content:center;padding-top:16px;border-top:1px solid #2d3748;margin-top:8px">'
-    '<button class="btn btn-ghost" onclick="goStep(4)">&#8592; Back to Aggregation Config</button>'
+    '<button class="btn btn-ghost" onclick="goStep(3)">&#8592; Back</button>'
     '</div>'
     '</div>'
     '</div>'
@@ -2252,12 +2275,11 @@ _WORKFLOW_HTML = (
     'function goStep(n){'
     'document.querySelectorAll(".panel").forEach(p=>p.classList.remove("active"));'
     'document.getElementById(`p${n}`).classList.add("active");'
-    '["si1","si2","si3","si4","si5"].forEach((id,i)=>{'
+    '["si1","si2","si3","si4"].forEach((id,i)=>{'
     'const el=document.getElementById(id);'
     'if(el)el.className="si"+(i+1<n?" done":i+1===n?" active":"");});'
     'if(n===1){const b=document.getElementById("s1-btn");if(state.files.length)b.disabled=false;document.getElementById("s1-status").innerHTML="";}'
-    'if(n===2){document.getElementById("s2-btn").disabled=false;document.getElementById("s2-status").innerHTML="";}'
-    'if(n===4){document.getElementById("s4-btn").disabled=false;document.getElementById("s4-status").innerHTML="";}}'
+    'if(n===3){document.getElementById("s3-btn").disabled=false;document.getElementById("s3-status").innerHTML="";}}'
     'function addFilter(){'
     'const id=++filterSeq;'
     'const cols=state.columns.map(c=>c.name);'
@@ -2276,72 +2298,19 @@ _WORKFLOW_HTML = (
     'function syncFilters(){'
     'const rows=document.querySelectorAll(".filter-row");'
     'document.getElementById("no-filters").style.display=rows.length?"none":"";}'
-    'async function doBuild(){'
+    'const FNS=["SUM","COUNT","AVG","MIN","MAX"];'
+    'let metricSeq=0;'
+    'function renderStep3(){'
     'const cols=[];'
     'document.querySelectorAll("#col-tbody tr").forEach((tr,i)=>{'
     'cols.push({name:state.columns[i].name,'
     'output_name:tr.querySelector(".col-out").value.trim(),'
     'type:tr.querySelector(".col-type").value,'
     'include:tr.querySelector(".col-check").checked});});'
-    'const filters=[];'
-    'document.querySelectorAll(".filter-row").forEach(row=>{'
-    'const op=row.querySelector(".filter-op").value;'
-    'const val=row.querySelector(".filter-val");'
-    'filters.push({column:row.querySelector(".filter-col").value,operator:op,value:val?val.value.trim():""});});'
-    'const btn=document.getElementById("s2-btn");'
-    'const st=document.getElementById("s2-status");'
-    'btn.disabled=true;'
-    'st.innerHTML="<div class=\\"spin-wrap\\"><div class=\\"spinner\\"></div>&nbsp;Building pipeline…</div>";'
-    'try{'
-    'const r=await fetch("/api/workflow/build-clean",{method:"POST",'
-    'headers:{"Content-Type":"application/json"},'
-    'body:JSON.stringify({table:state.table,columns:cols,filters})});'
-    'const j=await r.json();'
-    'if(r.ok){'
-    'document.getElementById("p3-pid").textContent=j.pipeline_id;'
-    'document.getElementById("p3-link").href=j.airflow_url;'
-    'document.getElementById("p3-sql").textContent=j.sql_preview;'
-    'state.pipeline_id=j.pipeline_id;'
-    'state.cleanModel=j.model_name;'
-    'state.cleanAirflow=j.airflow_url;'
-    'state.cleanedCols=cols.filter(c=>c.include);'
-    'goStep(3);'
-    '}else{st.innerHTML=`<span class="err-msg">${j.detail||"Build failed"}</span>`;btn.disabled=false;}'
-    '}catch(e){st.innerHTML="<span class=\\"err-msg\\">Network error</span>";btn.disabled=false;}}'
-    'async function runPipeline(){'
-    'const btn=document.getElementById("run-btn");'
-    'const st=document.getElementById("run-status");'
-    'const pid=state.pipeline_id;'
-    'btn.disabled=true;'
-    'st.innerHTML="<span style=\\"color:#718096\\">⏳ Waiting for Airflow to register DAG…</span>";'
-    'let found=false;'
-    'for(let i=0;i<12;i++){'
-    'await new Promise(r=>setTimeout(r,5000));'
-    'try{'
-    'const r=await fetch("/api/pipelines");'
-    'const j=await r.json();'
-    'const dags=Array.isArray(j)?j:(j.dags||[]);'
-    'if(dags.some(d=>(d.dag_id||d.pipeline_id||d.id)===pid)){found=true;break;}'
-    '}catch(_){}'
-    'st.innerHTML=`<span style="color:#718096">⏳ Waiting for Airflow… (${(i+1)*5}s)</span>`;}'
-    'if(!found){'
-    'st.innerHTML="<span style=\\"color:#fc8181\\">DAG not detected after 60s — try opening Airflow manually.</span>";'
-    'btn.disabled=false;return;}'
-    'st.innerHTML="<span style=\\"color:#718096\\">🚀 Triggering run…</span>";'
-    'try{'
-    'const r=await fetch(`/api/pipelines/${pid}/trigger`,{method:"POST"});'
-    'if(r.ok){'
-    'st.innerHTML="<span style=\\"color:#68d391\\">✓ Pipeline triggered! Check Airflow for progress.</span>";'
-    '}else{'
-    'const j=await r.json();'
-    'st.innerHTML=`<span style="color:#fc8181">Trigger failed: ${j.detail||r.status}</span>`;'
-    'btn.disabled=false;}}'
-    'catch(e){st.innerHTML="<span style=\\"color:#fc8181\\">Network error triggering run.</span>";btn.disabled=false;}}'
-    'const FNS=["SUM","COUNT","AVG","MIN","MAX"];'
-    'let metricSeq=0;'
-    'function renderStep4(){'
+    'state.cleanCols=cols;'
+    'const included=cols.filter(c=>c.include);'
     'const gb=document.getElementById("gb-grid");'
-    'gb.innerHTML=state.cleanedCols.map(c=>'
+    'gb.innerHTML=included.map(c=>'
     '`<label class="chk-item"><input type="checkbox" data-col="${c.output_name||c.name}">&nbsp;${c.output_name||c.name}</label>`'
     ').join("");'
     'document.getElementById("metric-list").innerHTML="";'
@@ -2349,7 +2318,8 @@ _WORKFLOW_HTML = (
     'metricSeq=0;}'
     'function addMetric(){'
     'const id=++metricSeq;'
-    'const cols=state.cleanedCols.map(c=>c.output_name||c.name);'
+    'const included=(state.cleanCols||[]).filter(c=>c.include);'
+    'const cols=included.map(c=>c.output_name||c.name);'
     'const row=document.createElement("div");'
     'row.className="metric-row";row.id=`mr${id}`;'
     'row.innerHTML='
@@ -2361,30 +2331,38 @@ _WORKFLOW_HTML = (
     'document.getElementById("no-metrics").style.display="none";}'
     'function syncMetrics(){'
     'document.getElementById("no-metrics").style.display=document.querySelectorAll(".metric-row").length?"none":"";}'
-    'async function doBuildAgg(){'
-    'const gb=[];'
-    'document.querySelectorAll("#gb-grid input:checked").forEach(inp=>gb.push(inp.dataset.col));'
+    'async function doProcess(){'
+    'const filters=[];'
+    'document.querySelectorAll(".filter-row").forEach(row=>{'
+    'const op=row.querySelector(".filter-op").value;'
+    'const val=row.querySelector(".filter-val");'
+    'filters.push({column:row.querySelector(".filter-col").value,operator:op,value:val?val.value.trim():""});});'
     'const mx=[];'
     'document.querySelectorAll(".metric-row").forEach(row=>{'
     'const sels=row.querySelectorAll("select");'
     'mx.push({column:sels[0].value,fn:sels[1].value,output_name:row.querySelector("input[type=text]").value.trim()});});'
-    'if(!mx.length){document.getElementById("s4-status").innerHTML="<span class=\\"err-msg\\">Add at least one metric.</span>";return;}'
-    'const btn=document.getElementById("s4-btn");'
-    'const st=document.getElementById("s4-status");'
+    'const gb=[];'
+    'document.querySelectorAll("#gb-grid input:checked").forEach(inp=>gb.push(inp.dataset.col));'
+    'const btn=document.getElementById("s3-btn");'
+    'const st=document.getElementById("s3-status");'
     'btn.disabled=true;'
-    'st.innerHTML="<div class=\\"spin-wrap\\"><div class=\\"spinner\\"></div>&nbsp;Building aggregation pipeline…</div>";'
+    'st.innerHTML="<div class=\\"spin-wrap\\"><div class=\\"spinner\\"></div>&nbsp;Processing data…</div>";'
     'try{'
-    'const r=await fetch("/api/workflow/build-agg",{method:"POST",headers:{"Content-Type":"application/json"},'
-    'body:JSON.stringify({table:state.table,clean_model:state.cleanModel,group_by:gb,metrics:mx})});'
+    'const r=await fetch("/api/workflow/process",{method:"POST",headers:{"Content-Type":"application/json"},'
+    'body:JSON.stringify({table:state.table,columns:state.cleanCols,filters,group_by:gb,metrics:mx})});'
     'const j=await r.json();'
-    'if(r.ok){'
-    'document.getElementById("p5-pid").textContent=j.pipeline_id;'
-    'document.getElementById("p5-clean-link").href=state.cleanAirflow;'
-    'document.getElementById("p5-agg-link").href=j.airflow_url;'
-    'document.getElementById("p5-sql").textContent=j.sql_preview;'
-    'goStep(5);'
-    '}else{st.innerHTML=`<span class="err-msg">${j.detail||"Build failed"}</span>`;btn.disabled=false;}'
+    'if(r.ok){renderResults(j);goStep(4);}'
+    'else{st.innerHTML=`<span class="err-msg">${j.detail||"Processing failed"}</span>`;btn.disabled=false;}'
     '}catch(e){st.innerHTML="<span class=\\"err-msg\\">Network error</span>";btn.disabled=false;}}'
+    'function renderResults(j){'
+    'let summary=`<div>&#10003; Cleaned: <b>analytics."${j.clean_table}"</b> — ${j.clean_rows} rows</div>`;'
+    'if(j.agg_table)summary+=`<div style="margin-top:4px">&#10003; Aggregated: <b>analytics."${j.agg_table}"</b> — ${j.agg_rows} rows</div>`;'
+    'document.getElementById("r-summary").innerHTML=summary;'
+    'const p=j.preview;'
+    'document.getElementById("r-preview").innerHTML='
+    '`<table class="col-tbl"><thead><tr>${p.columns.map(c=>`<th>${c}</th>`).join("")}</tr></thead>`+'
+    '`<tbody>${p.rows.map(r=>`<tr>${r.map(v=>`<td style="color:#a0aec0">${v??""}</td>`).join("")}</tr>`).join("")}</tbody></table>`+'
+    '`<div style="font-size:.72rem;color:#4a5568;margin-top:8px">Showing up to 20 rows · ${j.agg_table?"aggregated":"cleaned"} output</div>`;}'
     '</script>'
     '<script>if(location.search.includes("embed=1"))document.querySelectorAll(\'a[href="/"]\').forEach(e=>e.style.display="none");</script>'
     '</body></html>'
