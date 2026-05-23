@@ -937,18 +937,37 @@ async function checkHealth() {
 }
 
 async function restartServices() {
-  if (!confirm('Restart Airflow webserver and scheduler?\\n\\nAirflow will be back in ~30 seconds.')) return;
+  if (!confirm('Restart Airflow webserver and scheduler?\\n\\nThis takes 60–90 seconds.')) return;
   const btn = document.getElementById('restart-btn');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Restarting…'; }
   try {
     await fetch('/api/admin/restart', {method:'POST'}).then(r => r.json());
-    toast('Restart triggered — checking health in 30s');
-    setTimeout(checkHealth, 30000);
+    toast('Airflow restarting — polling until ready…');
+    pollAirflowReady(0);
   } catch(e) {
     toast('Restart failed: ' + e.message, 'err');
-  } finally {
     if (btn) { btn.disabled = false; btn.textContent = '🔄 Restart Airflow'; }
   }
+}
+async function pollAirflowReady(attempt) {
+  const btn = document.getElementById('restart-btn');
+  if (attempt >= 18) {
+    toast('Airflow still not ready after 3 min — check logs', 'err');
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 Restart Airflow'; }
+    return;
+  }
+  await new Promise(r => setTimeout(r, 10000));
+  if (btn) btn.textContent = '⏳ Waiting… (' + ((attempt+1)*10) + 's)';
+  try {
+    const j = await fetch('/api/admin/health').then(r => r.json());
+    if (j.airflow === 'up') {
+      toast('✓ Airflow is back online');
+      checkHealth();
+      if (btn) { btn.disabled = false; btn.textContent = '🔄 Restart Airflow'; }
+      return;
+    }
+  } catch(_) {}
+  pollAirflowReady(attempt + 1);
 }
 
 function openAllTools() {
