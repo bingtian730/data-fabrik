@@ -1752,23 +1752,10 @@ class _FilterConfig(BaseModel):
     value: str = ""
 
 
-class _BuildCleanPayload(BaseModel):
-    table: str
-    columns: list[_ColConfig]
-    filters: list[_FilterConfig] = []
-
-
 class _AggMetric(BaseModel):
     column: str
     fn: str
     output_name: str = ""
-
-
-class _BuildAggPayload(BaseModel):
-    table: str
-    clean_model: str
-    group_by: list[str]
-    metrics: list[_AggMetric]
 
 
 def _generate_agg_sql(clean_model: str, group_by: list[str], metrics: list[dict]) -> str:
@@ -1795,7 +1782,7 @@ def _generate_agg_sql(clean_model: str, group_by: list[str], metrics: list[dict]
         group_str = "    GROUP BY " + ", ".join(f'"{c}"' for c in group_by) + "\n"
     return (
         f'with source as (\n'
-        f'    select * from clean."{clean_model}"\n'
+        f'    select * from clean."{clean_model}"\n'  # clean_model == table name
         f'),\n'
         f'aggregated as (\n'
         f'    select\n'
@@ -1865,8 +1852,6 @@ async def api_workflow_upload(table: str = Form(...), file: UploadFile = File(..
 
 class _ProcessPayload(BaseModel):
     table: str
-    s3_bucket: str
-    s3_key: str
     columns: list[_ColConfig]
     filters: list[_FilterConfig] = []
     group_by: list[str] = []
@@ -1875,75 +1860,52 @@ class _ProcessPayload(BaseModel):
 
 @app.post("/api/workflow/process")
 def api_process(payload: _ProcessPayload) -> dict:
-    """Generate clean + (optional) agg pipelines and trigger them on Airflow."""
+    """Generate a single pipeline that creates clean + optional analytics views."""
     table = _safe_name(payload.table)
     if not table:
         raise HTTPException(status_code=400, detail="Invalid table name")
 
-    ts         = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    cols       = [c.model_dump() for c in payload.columns]
-    filters    = [f.model_dump() for f in payload.filters]
-    clean_name = f"clean_{table}_{ts}"
-    clean_pid  = f"wiz_clean_{table}_{ts}"
+    ts      = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    cols    = [c.model_dump() for c in payload.columns]
+    filters = [f.model_dump() for f in payload.filters]
+    pid     = f"wiz_{table}_{ts}"
 
-    # ── Clean pipeline ─────────────────────────────────────────────────────────
     clean_sql = _generate_clean_sql(table, cols, filters)
-    clean_transform = (
+    sql_body = (
         f'CREATE SCHEMA IF NOT EXISTS clean;\n'
-        f'DROP TABLE IF EXISTS clean."{clean_name}";\n'
-        f'CREATE TABLE clean."{clean_name}" AS\n{clean_sql};'
+        f'CREATE OR REPLACE VIEW clean."{table}" AS\n{clean_sql};\n'
     )
+
+    agg_view = None
+    if payload.metrics:
+        agg_sql = _generate_agg_sql(table, payload.group_by,
+                                    [m.model_dump() for m in payload.metrics])
+        sql_body += (
+            f'CREATE SCHEMA IF NOT EXISTS analytics;\n'
+            f'CREATE OR REPLACE VIEW analytics."{table}" AS\n{agg_sql};\n'
+        )
+        agg_view = f'analytics."{table}"'
+
     _CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
-    (_CONFIGS_DIR / f"{clean_pid}.sql").write_text(clean_transform)
-    (_CONFIGS_DIR / f"{clean_pid}.yaml").write_text(
-        f"pipeline_id: {clean_pid}\n"
-        f"description: Wizard cleaning pipeline for {table}\n"
+    (_CONFIGS_DIR / f"{pid}.sql").write_text(sql_body)
+    (_CONFIGS_DIR / f"{pid}.yaml").write_text(
+        f"pipeline_id: {pid}\n"
+        f"description: Wizard pipeline for {table}\n"
         f"tags: [generated, wizard, {table}]\n\n"
         f"schedule:\n  preset: \"@once\"\n  retries: 1\n\n"
         f"stages:\n"
         f"  transformation:\n"
         f"    type: sql\n"
-        f"    sql_file: /opt/airflow/configs/pipelines/{clean_pid}.sql\n"
+        f"    sql_file: /opt/airflow/configs/pipelines/{pid}.sql\n"
     )
-    api_trigger_pipeline(clean_pid)
+    api_trigger_pipeline(pid)
 
-    result: dict = {
-        "clean_pipeline_id": clean_pid,
-        "clean_table": f'clean."{clean_name}"',
-        "clean_airflow_url": f"http://localhost:8082/dags/{clean_pid}/grid",
-        "agg_pipeline_id": None,
-        "agg_table": None,
-        "agg_airflow_url": None,
+    return {
+        "pipeline_id": pid,
+        "clean_view": f'clean."{table}"',
+        "agg_view": agg_view,
+        "airflow_url": f"http://localhost:8082/dags/{pid}/grid",
     }
-
-    # ── Agg pipeline (optional) ────────────────────────────────────────────────
-    if payload.metrics:
-        agg_name = f"agg_{table}_{ts}"
-        agg_pid  = f"wiz_agg_{table}_{ts}"
-        agg_sql  = _generate_agg_sql(clean_name, payload.group_by,
-                                     [m.model_dump() for m in payload.metrics])
-        agg_transform = (
-            f'CREATE SCHEMA IF NOT EXISTS analytics;\n'
-            f'DROP TABLE IF EXISTS analytics."{agg_name}";\n'
-            f'CREATE TABLE analytics."{agg_name}" AS\n{agg_sql};'
-        )
-        (_CONFIGS_DIR / f"{agg_pid}.sql").write_text(agg_transform)
-        (_CONFIGS_DIR / f"{agg_pid}.yaml").write_text(
-            f"pipeline_id: {agg_pid}\n"
-            f"description: Wizard aggregation pipeline for {table}\n"
-            f"tags: [generated, wizard, {table}]\n\n"
-            f"schedule:\n  preset: \"@once\"\n  retries: 2\n\n"
-            f"stages:\n"
-            f"  transformation:\n"
-            f"    type: sql\n"
-            f"    sql_file: /opt/airflow/configs/pipelines/{agg_pid}.sql\n"
-        )
-        api_trigger_pipeline(agg_pid)
-        result["agg_pipeline_id"] = agg_pid
-        result["agg_table"] = f'analytics."{agg_name}"'
-        result["agg_airflow_url"] = f"http://localhost:8082/dags/{agg_pid}/grid"
-
-    return result
 
 
 # ── Pipeline management API ────────────────────────────────────────────────────
@@ -2326,9 +2288,9 @@ _WORKFLOW_HTML = (
     '</div>'
     '<div class="card" style="font-size:.82rem;color:#718096;line-height:1.8">'
     '<div style="font-weight:700;color:#e2e8f0;margin-bottom:10px">What happens next</div>'
-    '<div>&#9312; Airflow runs the cleaning SQL on <code style="color:#63b3ed">raw.*</code> and writes results to <code style="color:#63b3ed">clean.*</code></div>'
-    '<div>&#9313; If you added aggregations, Airflow reads from <code style="color:#63b3ed">clean.*</code> and writes to <code style="color:#63b3ed">analytics.*</code></div>'
-    '<div style="margin-top:8px">&#9314; Open Metabase and connect to the <code style="color:#63b3ed">datafabrik</code> database to visualize</div>'
+    '<div>&#9312; Airflow creates a <code style="color:#63b3ed">clean.*</code> view reading from <code style="color:#63b3ed">raw.*</code></div>'
+    '<div>&#9313; If you added aggregations, an <code style="color:#63b3ed">analytics.*</code> view is created reading from the clean view</div>'
+    '<div style="margin-top:8px">&#9314; Open Metabase and connect to the <code style="color:#63b3ed">datafabrik</code> database to query the views</div>'
     '</div>'
     '<div style="text-align:center;margin-top:16px">'
     '<a class="btn btn-primary" href="http://localhost:3001" target="_blank">Open Metabase &#8599;</a>'
@@ -2341,7 +2303,7 @@ _WORKFLOW_HTML = (
     '<script>'
     'const TYPES=["TEXT","INTEGER","NUMERIC","DATE","TIMESTAMP","BOOLEAN"];'
     'const OPS=[["=","equals"],["!=","not equals"],[">=","≥"],["<=","≤"],["LIKE","contains"],["IS NULL","is empty"],["IS NOT NULL","is not empty"]];'
-    'let state={table:"",rows:0,columns:[],s3_bucket:"",s3_key:""};'
+    'let state={table:"",rows:0,columns:[]};'
     'let filterSeq=0;'
     'window.addEventListener("message",function(e){'
     'if(!e.data)return;'
@@ -2351,7 +2313,6 @@ _WORKFLOW_HTML = (
     'if(e.data.type!=="datafabrik_upload")return;'
     'const j=e.data;'
     'state.table=j.table_name;state.rows=j.rows;state.columns=j.columns;'
-    'state.s3_bucket=j.s3_bucket;state.s3_key=j.s3_key;'
     'document.getElementById("s1-continue").style.display="";});'
     'function renderStep2(data){'
     'state.columns=data.columns;'
@@ -2449,8 +2410,7 @@ _WORKFLOW_HTML = (
     'st.innerHTML="<div class=\\"spin-wrap\\"><div class=\\"spinner\\"></div>&nbsp;Creating pipeline…</div>";'
     'try{'
     'const r=await fetch("/api/workflow/process",{method:"POST",headers:{"Content-Type":"application/json"},'
-    'body:JSON.stringify({table:state.table,s3_bucket:state.s3_bucket,s3_key:state.s3_key,'
-    'columns:state.cleanCols,filters,group_by:gb,metrics:mx})});'
+    'body:JSON.stringify({table:state.table,columns:state.cleanCols,filters,group_by:gb,metrics:mx})});'
     'const j=await r.json();'
     'if(r.ok){renderResults(j);goStep(4);}'
     'else{'
@@ -2459,21 +2419,16 @@ _WORKFLOW_HTML = (
     'st.innerHTML=\'<span class="err-msg">\'+msg+\'</span>\';btn.disabled=false;}'
     '}catch(e){st.innerHTML="<span class=\\"err-msg\\">Network error</span>";btn.disabled=false;}}'
     'function renderResults(j){'
-    'let html=`<div style="display:flex;flex-direction:column;gap:14px;margin-top:4px">`+'
-    '`<div style="background:#0d1627;border:1px solid #2b4c7e;border-radius:8px;padding:16px">`+'
-    '`<div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#63b3ed;margin-bottom:8px">Cleaning Pipeline</div>`+'
-    '`<div style="font-family:monospace;font-size:.8rem;color:#68d391;margin-bottom:10px">${j.clean_pipeline_id}</div>`+'
-    '`<div style="font-size:.78rem;color:#718096;margin-bottom:10px">Target: <code style="color:#a0aec0">${j.clean_table}</code></div>`+'
-    '`<a class="btn btn-primary btn-sm" href="${j.clean_airflow_url}" target="_blank">View in Airflow &#8599;</a>`+'
+    'let views=`<div style="font-size:.78rem;color:#718096;margin-top:6px">`+'
+    '`<div>Clean view: <code style="color:#a0aec0">${j.clean_view}</code></div>`;'
+    'if(j.agg_view)views+=`<div>Analytics view: <code style="color:#a0aec0">${j.agg_view}</code></div>`;'
+    'views+=`</div>`;'
+    'const html=`<div style="background:#0d1627;border:1px solid #2b4c7e;border-radius:8px;padding:16px;margin-top:4px">`+'
+    '`<div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#63b3ed;margin-bottom:8px">Pipeline</div>`+'
+    '`<div style="font-family:monospace;font-size:.8rem;color:#68d391;margin-bottom:6px">${j.pipeline_id}</div>`+'
+    '${views}+'
+    '`<div style="margin-top:12px"><a class="btn btn-primary btn-sm" href="${j.airflow_url}" target="_blank">View in Airflow &#8599;</a></div>`+'
     '`</div>`;'
-    'if(j.agg_pipeline_id){'
-    'html+=`<div style="background:#0d1627;border:1px solid #276749;border-radius:8px;padding:16px">`+'
-    '`<div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#68d391;margin-bottom:8px">Aggregation Pipeline</div>`+'
-    '`<div style="font-family:monospace;font-size:.8rem;color:#68d391;margin-bottom:10px">${j.agg_pipeline_id}</div>`+'
-    '`<div style="font-size:.78rem;color:#718096;margin-bottom:10px">Target: <code style="color:#a0aec0">${j.agg_table}</code></div>`+'
-    '`<a class="btn btn-primary btn-sm" href="${j.agg_airflow_url}" target="_blank">View in Airflow &#8599;</a>`+'
-    '`</div>`;}'
-    'html+=`</div>`;'
     'document.getElementById("r-pipelines").innerHTML=html;}'
     '</script>'
     '<script>if(location.search.includes("embed=1"))document.querySelectorAll(\'a[href="/"]\').forEach(e=>e.style.display="none");</script>'
