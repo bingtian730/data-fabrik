@@ -145,26 +145,6 @@ services:
       start_period: 30s
     restart: unless-stopped
 
-  dbt:
-    image: ghcr.io/dbt-labs/dbt-postgres:1.8.2
-    container_name: datafabrik-dbt
-    platform: linux/amd64
-    entrypoint: ["sleep", "infinity"]
-    working_dir: /usr/app/dbt
-    environment:
-      DBT_PROFILES_DIR: /usr/app/dbt
-      DBT_HOST: postgres
-      DBT_USER: datafabrik
-      DBT_PASSWORD: datafabrik
-      DBT_DB: datafabrik
-      DBT_SCHEMA: analytics
-    volumes:
-      - ./dbt/datafabrik_models:/usr/app/dbt
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: unless-stopped
-
   fastapi:
     build:
       context: .
@@ -175,7 +155,6 @@ services:
     volumes:
       - ./backend:/app
       - ./orchestration/airflow/configs:/app/configs
-      - ./dbt/datafabrik_models/models:/app/dbt_models
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       DATABASE_URL: postgresql+psycopg2://datafabrik:datafabrik@postgres:5432/datafabrik

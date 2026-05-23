@@ -130,11 +130,7 @@ def upsert_lineage(config: PipelineConfig) -> None:
 
     transform    = stages.transformation
     tx_type      = transform.type if transform else None
-    tx_target    = (
-        transform.select    if tx_type == "dbt" else
-        transform.sql_file  if tx_type == "sql" else
-        None
-    )
+    tx_target    = transform.sql_file if tx_type == "sql" else None
 
     delivery  = stages.delivery
     del_type  = delivery.type if delivery else None

@@ -13,7 +13,6 @@ from pipelines.shared.schema.sources import (
     SourceConfig,
 )
 from pipelines.shared.schema.transformations import (
-    DbtTransformConfig,
     SparkTransformConfig,
     SqlTransformConfig,
     TransformationConfig,
@@ -26,7 +25,6 @@ from pipelines.shared.schema.validations import (
 )
 
 __all__ = [
-    "DbtTransformConfig",
     "DestinationConfig",
     "FreshnessValidation",
     "HttpApiSourceConfig",

@@ -766,13 +766,8 @@ select.form-control{cursor:pointer}
           <div class="form-group">
             <label class="form-label">Transform Type</label>
             <select id="b-transform" class="form-control">
-              <option value="dbt">dbt — SQL models</option>
               <option value="none">None — skip transformation</option>
             </select>
-          </div>
-          <div id="dbt-select-wrap" class="form-group">
-            <label class="form-label">dbt --select (model names, space-separated)</label>
-            <input id="b-dbt-select" class="form-control" placeholder="auto-generated from pipeline name" type="text">
           </div>
         </div>
 
@@ -801,7 +796,6 @@ select.form-control{cursor:pointer}
             <pre id="yaml-out"></pre>
           </div>
         </div>
-        <div id="dbt-results"></div>
         <button class="btn btn-ghost" onclick="resetBuilder()" style="margin-top:8px">← New Pipeline</button>
       </div>
     </div>
@@ -1095,11 +1089,6 @@ function updateSourceFields() {
   document.getElementById('src-s3').style.display   = t==='s3_csv' ? '' : 'none';
 }
 
-function updateTransformFields() {
-  const t = document.getElementById('b-transform').value;
-  document.getElementById('dbt-select-wrap').style.display = t==='dbt' ? '' : 'none';
-}
-
 async function generatePipeline() {
   const name = document.getElementById('b-name').value.trim();
   if (!name) { toast('Pipeline name is required', 'err'); return; }
@@ -1109,7 +1098,6 @@ async function generatePipeline() {
   const owner = document.getElementById('b-owner').value.trim() || 'data-platform';
   const tags = document.getElementById('b-tags').value.split(',').map(t=>t.trim()).filter(Boolean);
   const transform = document.getElementById('b-transform').value;
-  const dbtSelect = document.getElementById('b-dbt-select').value.trim();
 
   const pipelineId = name.toLowerCase().replace(/[^a-z0-9]+/g,'_');
 
@@ -1137,11 +1125,6 @@ async function generatePipeline() {
 
   // Build stages
   const stages = {ingestion};
-  if (transform === 'dbt') {
-    const stagingModel = `stg_${pipelineId}`;
-    const analyticsModel = `${pipelineId}_summary`;
-    stages.transformation = {type:'dbt', select: dbtSelect || `${stagingModel} ${analyticsModel}`};
-  }
 
   // Build schedule
   let scheduleConfig;
@@ -1154,32 +1137,9 @@ async function generatePipeline() {
   const config = {pipeline_id: pipelineId, description: document.getElementById('b-desc').value.trim() || null,
     owner, tags, schedule: scheduleConfig, stages};
 
-  // Generate dbt SQL stubs (client-side, no AI)
-  const stagingModel = `stg_${pipelineId}`;
-  const analyticsModel = `${pipelineId}_summary`;
-  const tableHint = srcType === 'jdbc'
-    ? (document.getElementById('b-tables').value.split(',')[0].trim() || pipelineId)
-    : pipelineId;
-
-  const stagingSQL = `SELECT
-    -- TODO: replace with actual column list
-    *
-FROM {{ source('raw', '${tableHint}') }}`;
-
-  const analyticsSQL = `SELECT
-    -- TODO: add GROUP BY dimensions
-    COUNT(*) AS row_count
-FROM {{ ref('${stagingModel}') }}`;
-
-  const dbtModels = transform === 'dbt' ? {
-    [`${stagingModel}.sql`]: stagingSQL,
-    [`${analyticsModel}.sql`]: analyticsSQL
-  } : {};
-
   // Render results
   renderBuilderResults({
     pipeline_yaml: jsYaml(config),
-    dbt_models: dbtModels,
     validation_passed: true,
     validation_error: null
   });
@@ -1232,23 +1192,6 @@ function renderBuilderResults(result) {
 
   // YAML
   document.getElementById('yaml-out').textContent = result.pipeline_yaml;
-
-  // dbt models
-  const dbtEl = document.getElementById('dbt-results');
-  if (Object.keys(result.dbt_models || {}).length) {
-    dbtEl.innerHTML = '<div class="result-section"><h3>dbt Model Stubs</h3>'
-      + Object.entries(result.dbt_models).map(([fname, sql]) => `
-        <div class="code-block">
-          <div class="code-block-header">
-            <span>${fname}</span>
-            <button class="btn btn-ghost btn-sm" onclick="copyText(${JSON.stringify(sql)})">Copy</button>
-          </div>
-          <pre>${sql.replace(/</g,'&lt;')}</pre>
-        </div>`).join('')
-      + '</div>';
-  } else {
-    dbtEl.innerHTML = '';
-  }
 }
 
 function resetBuilder() {
@@ -1273,8 +1216,7 @@ loadHome();
 
 # ── Onboarding API ───────────────────────────────────────────────────────────
 
-_CONFIGS_DIR    = Path("/app/configs/pipelines")
-_DBT_MODELS_DIR = Path("/app/dbt_models")
+_CONFIGS_DIR = Path("/app/configs/pipelines")
 
 class _OnboardPayload(BaseModel):
     yaml_content: str
@@ -1328,9 +1270,9 @@ def _validate_config(data: dict) -> list[dict]:
             errors.append({"field": "stages.transformation", "message": "Must be a mapping"})
         else:
             t_type = transform.get("type")
-            if t_type not in ("dbt", "sql", "spark"):
+            if t_type not in ("sql", "spark"):
                 errors.append({"field": "stages.transformation.type",
-                                "message": "Must be one of: dbt, sql, spark"})
+                                "message": "Must be one of: sql, spark"})
             elif t_type == "sql":
                 for f in ("connection_id", "sql_file"):
                     if not transform.get(f):
@@ -1407,10 +1349,7 @@ stages:
     type: jdbc
     connection_id: my_connection_id
     table: public.my_table
-    watermark_column: updated_at
-  transformation:
-    type: dbt
-    select: stg_my_pipeline_daily"""
+    watermark_column: updated_at"""
 
 _TMPL_HTTP = """pipeline_id: my_api_pipeline
 description: Fetch data from REST API daily
@@ -1426,10 +1365,7 @@ stages:
     type: http_api
     url: https://api.example.com/v1/data
     method: GET
-    dest_key: my_api/{{ ds_nodash }}.json
-  transformation:
-    type: dbt
-    select: stg_my_api_pipeline"""
+    dest_key: my_api/{{ ds_nodash }}.json"""
 
 _TMPL_S3 = """pipeline_id: my_csv_pipeline
 description: Load CSV files from S3 daily
@@ -1444,10 +1380,7 @@ stages:
   ingestion:
     type: s3_csv
     source_bucket: customer-landing
-    source_key: my-folder/*.csv
-  transformation:
-    type: dbt
-    select: stg_my_csv_pipeline"""
+    source_key: my-folder/*.csv"""
 
 _ONBOARD_HTML = (
     '<!DOCTYPE html><html lang="en"><head>'
@@ -1607,10 +1540,7 @@ _ONBOARD_HTML = (
     '<div class="next-step">① '
     '<a href="http://localhost:8080" target="_blank">Open Airflow ↗</a>'
     ' — your DAG will appear within ~30 seconds</div>'
-    '<div class="next-step">② Add dbt models under '
-    '<code style="background:#2d3748;padding:1px 6px;border-radius:4px">'
-    'dbt/datafabrik_models/models/&lt;pipeline_id&gt;/</code></div>'
-    '<div class="next-step">③ Trigger a test run from the '
+    '<div class="next-step">② Trigger a test run from the '
     '<a href="/" target="_blank">portal Pipelines tab ↗</a></div>'
     '</div>'
     '</div>'
@@ -1865,7 +1795,7 @@ def _generate_agg_sql(clean_model: str, group_by: list[str], metrics: list[dict]
         group_str = "    GROUP BY " + ", ".join(f'"{c}"' for c in group_by) + "\n"
     return (
         f'with source as (\n'
-        f'    select * from analytics."{clean_model}"\n'
+        f'    select * from clean."{clean_model}"\n'
         f'),\n'
         f'aggregated as (\n'
         f'    select\n'
@@ -1933,78 +1863,6 @@ async def api_workflow_upload(table: str = Form(...), file: UploadFile = File(..
     }
 
 
-@app.post("/api/workflow/build-clean")
-def api_build_clean(payload: _BuildCleanPayload) -> dict:
-    table = _safe_name(payload.table)
-    if not table:
-        raise HTTPException(status_code=400, detail="Invalid table name")
-    ts         = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    model_name = f"stg_clean_{table}_{ts}"
-    pipeline_id = f"clean_{table}_{ts}"
-    cols    = [c.model_dump() for c in payload.columns]
-    filters = [f.model_dump() for f in payload.filters]
-    sql = _generate_clean_sql(table, cols, filters)
-    model_dir = _DBT_MODELS_DIR / "acme"
-    model_dir.mkdir(parents=True, exist_ok=True)
-    (model_dir / f"{model_name}.sql").write_text(sql)
-    pipeline_yaml = (
-        f"pipeline_id: {pipeline_id}\n"
-        f"description: Auto-generated cleaning pipeline for raw.{table}\n"
-        f"tags: [generated, cleaning, {table}]\n\n"
-        f"schedule:\n  preset: \"@daily\"\n  retries: 1\n\n"
-        f"stages:\n"
-        f"  ingestion:\n    type: jdbc\n    connection_id: acme_postgres\n    table: raw.{table}\n\n"
-        f"  transformation:\n    type: dbt\n    select: {model_name}\n\n"
-        f"  validation:\n"
-        f"    - type: row_count\n      connection_id: postgres_default\n"
-        f"      table: analytics.{model_name}\n      min_rows: 1\n"
-    )
-    _CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
-    (_CONFIGS_DIR / f"{pipeline_id}.yaml").write_text(pipeline_yaml)
-    return {
-        "pipeline_id": pipeline_id,
-        "model_name":  model_name,
-        "airflow_url": f"http://localhost:8080/dags/{pipeline_id}/grid",
-        "sql_preview": sql,
-    }
-
-
-@app.post("/api/workflow/build-agg")
-def api_build_agg(payload: _BuildAggPayload) -> dict:
-    table = _safe_name(payload.table)
-    if not table:
-        raise HTTPException(status_code=400, detail="Invalid table name")
-    ts          = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    model_name  = f"agg_{table}_{ts}"
-    pipeline_id = f"agg_{table}_{ts}"
-    sql = _generate_agg_sql(
-        payload.clean_model, payload.group_by,
-        [m.model_dump() for m in payload.metrics],
-    )
-    model_dir = _DBT_MODELS_DIR / "acme"
-    model_dir.mkdir(parents=True, exist_ok=True)
-    (model_dir / f"{model_name}.sql").write_text(sql)
-    pipeline_yaml = (
-        f"pipeline_id: {pipeline_id}\n"
-        f"description: Auto-generated aggregation pipeline for {payload.clean_model}\n"
-        f"tags: [generated, aggregation, {table}]\n\n"
-        f"schedule:\n  preset: \"@daily\"\n  retries: 1\n\n"
-        f"stages:\n"
-        f"  transformation:\n    type: dbt\n    select: {model_name}\n\n"
-        f"  validation:\n"
-        f"    - type: row_count\n      connection_id: postgres_default\n"
-        f"      table: analytics.{model_name}\n      min_rows: 1\n"
-    )
-    _CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
-    (_CONFIGS_DIR / f"{pipeline_id}.yaml").write_text(pipeline_yaml)
-    return {
-        "pipeline_id": pipeline_id,
-        "model_name":  model_name,
-        "airflow_url": f"http://localhost:8080/dags/{pipeline_id}/grid",
-        "sql_preview": sql,
-    }
-
-
 class _ProcessPayload(BaseModel):
     table: str
     s3_bucket: str
@@ -2031,9 +1889,9 @@ def api_process(payload: _ProcessPayload) -> dict:
     # ── Clean pipeline ─────────────────────────────────────────────────────────
     clean_sql = _generate_clean_sql(table, cols, filters)
     clean_transform = (
-        f'CREATE SCHEMA IF NOT EXISTS analytics;\n'
-        f'DROP TABLE IF EXISTS analytics."{clean_name}";\n'
-        f'CREATE TABLE analytics."{clean_name}" AS\n{clean_sql};'
+        f'CREATE SCHEMA IF NOT EXISTS clean;\n'
+        f'DROP TABLE IF EXISTS clean."{clean_name}";\n'
+        f'CREATE TABLE clean."{clean_name}" AS\n{clean_sql};'
     )
     _CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
     (_CONFIGS_DIR / f"{clean_pid}.sql").write_text(clean_transform)
@@ -2043,23 +1901,15 @@ def api_process(payload: _ProcessPayload) -> dict:
         f"tags: [generated, wizard, {table}]\n\n"
         f"schedule:\n  preset: \"@once\"\n  retries: 1\n\n"
         f"stages:\n"
-        f"  ingestion:\n"
-        f"    type: minio_csv\n"
-        f"    bucket: {payload.s3_bucket}\n"
-        f"    key: {payload.s3_key}\n"
-        f"    table: {table}\n\n"
         f"  transformation:\n"
         f"    type: sql\n"
-        f"    sql_file: /opt/airflow/configs/pipelines/{clean_pid}.sql\n\n"
-        f"  delivery:\n"
-        f"    type: postgres_table\n"
-        f'    table: analytics."{clean_name}"\n'
+        f"    sql_file: /opt/airflow/configs/pipelines/{clean_pid}.sql\n"
     )
     api_trigger_pipeline(clean_pid)
 
     result: dict = {
         "clean_pipeline_id": clean_pid,
-        "clean_table": f'analytics."{clean_name}"',
+        "clean_table": f'clean."{clean_name}"',
         "clean_airflow_url": f"http://localhost:8082/dags/{clean_pid}/grid",
         "agg_pipeline_id": None,
         "agg_table": None,
@@ -2086,10 +1936,7 @@ def api_process(payload: _ProcessPayload) -> dict:
             f"stages:\n"
             f"  transformation:\n"
             f"    type: sql\n"
-            f"    sql_file: /opt/airflow/configs/pipelines/{agg_pid}.sql\n\n"
-            f"  delivery:\n"
-            f"    type: postgres_table\n"
-            f'    table: analytics."{agg_name}"\n'
+            f"    sql_file: /opt/airflow/configs/pipelines/{agg_pid}.sql\n"
         )
         api_trigger_pipeline(agg_pid)
         result["agg_pipeline_id"] = agg_pid
@@ -2479,10 +2326,9 @@ _WORKFLOW_HTML = (
     '</div>'
     '<div class="card" style="font-size:.82rem;color:#718096;line-height:1.8">'
     '<div style="font-weight:700;color:#e2e8f0;margin-bottom:10px">What happens next</div>'
-    '<div>&#9312; Airflow ingests your CSV from MinIO into <code style="color:#63b3ed">raw.*</code></div>'
-    '<div>&#9313; SQL transformation creates the analytics table in Postgres</div>'
-    '<div>&#9314; Delivery step confirms the table is ready in the data warehouse</div>'
-    '<div style="margin-top:8px">&#9315; Open Metabase and connect to the <code style="color:#63b3ed">datafabrik</code> database to visualize</div>'
+    '<div>&#9312; Airflow runs the cleaning SQL on <code style="color:#63b3ed">raw.*</code> and writes results to <code style="color:#63b3ed">clean.*</code></div>'
+    '<div>&#9313; If you added aggregations, Airflow reads from <code style="color:#63b3ed">clean.*</code> and writes to <code style="color:#63b3ed">analytics.*</code></div>'
+    '<div style="margin-top:8px">&#9314; Open Metabase and connect to the <code style="color:#63b3ed">datafabrik</code> database to visualize</div>'
     '</div>'
     '<div style="text-align:center;margin-top:16px">'
     '<a class="btn btn-primary" href="http://localhost:3001" target="_blank">Open Metabase &#8599;</a>'

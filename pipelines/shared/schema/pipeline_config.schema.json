@@ -1,52 +1,5 @@
 {
   "$defs": {
-    "DbtTransformConfig": {
-      "additionalProperties": false,
-      "description": "Run dbt models for this pipeline.",
-      "properties": {
-        "type": {
-          "const": "dbt",
-          "enum": [
-            "dbt"
-          ],
-          "title": "Type",
-          "type": "string"
-        },
-        "project_dir": {
-          "default": "/usr/app/dbt",
-          "title": "Project Dir",
-          "type": "string"
-        },
-        "profiles_dir": {
-          "default": "/usr/app/dbt",
-          "title": "Profiles Dir",
-          "type": "string"
-        },
-        "select": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "dbt --select selector.",
-          "title": "Select"
-        },
-        "target": {
-          "default": "dev",
-          "title": "Target",
-          "type": "string"
-        }
-      },
-      "required": [
-        "type"
-      ],
-      "title": "DbtTransformConfig",
-      "type": "object"
-    },
     "FreshnessValidation": {
       "additionalProperties": false,
       "description": "Assert a timestamp column has data newer than max_lag_minutes.",
@@ -60,8 +13,16 @@
           "type": "string"
         },
         "connection_id": {
-          "title": "Connection Id",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Connection Id"
         },
         "table": {
           "title": "Table",
@@ -80,7 +41,6 @@
       },
       "required": [
         "type",
-        "connection_id",
         "table",
         "timestamp_column"
       ],
@@ -151,7 +111,7 @@
     },
     "JdbcSourceConfig": {
       "additionalProperties": false,
-      "description": "Pull from a JDBC source via an Airflow connection.",
+      "description": "Incrementally extract a Postgres table into S3 as Parquet.\n\nOn each run the builder reads the last watermark from\npipeline_metadata.watermarks, extracts rows where\n`watermark_column > last_watermark`, writes a Parquet file to S3,\nupdates the watermark, and logs a row to pipeline_metadata.ingestion_log.",
       "properties": {
         "type": {
           "const": "jdbc",
@@ -165,8 +125,21 @@
           "title": "Connection Id",
           "type": "string"
         },
-        "query": {
-          "title": "Query",
+        "table": {
+          "description": "Fully-qualified source table, e.g. 'public.stripe_charges_raw'.",
+          "title": "Table",
+          "type": "string"
+        },
+        "watermark_column": {
+          "default": "updated_at",
+          "description": "Column used for incremental extraction.",
+          "title": "Watermark Column",
+          "type": "string"
+        },
+        "watermark_init": {
+          "default": "1970-01-01 00:00:00",
+          "description": "Watermark used on the very first run.",
+          "title": "Watermark Init",
           "type": "string"
         },
         "dest_bucket": {
@@ -174,18 +147,61 @@
           "title": "Dest Bucket",
           "type": "string"
         },
-        "dest_key": {
-          "title": "Dest Key",
-          "type": "string"
+        "dest_prefix": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dest Prefix"
         }
       },
       "required": [
         "type",
         "connection_id",
-        "query",
-        "dest_key"
+        "table"
       ],
       "title": "JdbcSourceConfig",
+      "type": "object"
+    },
+    "MinioCsvSourceConfig": {
+      "additionalProperties": false,
+      "description": "Load a CSV file from MinIO into a Postgres raw schema table.",
+      "properties": {
+        "type": {
+          "const": "minio_csv",
+          "enum": [
+            "minio_csv"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "bucket": {
+          "default": "datafabrik-raw",
+          "title": "Bucket",
+          "type": "string"
+        },
+        "key": {
+          "description": "Object key of the CSV in MinIO, e.g. 'wizard/orders/orders_20260522.csv'.",
+          "title": "Key",
+          "type": "string"
+        },
+        "table": {
+          "description": "Target table name in the raw schema, e.g. 'orders'.",
+          "title": "Table",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "key",
+        "table"
+      ],
+      "title": "MinioCsvSourceConfig",
       "type": "object"
     },
     "PipelineStages": {
@@ -193,25 +209,37 @@
       "description": "The four stages of a DataFabrik pipeline.\n\n- `ingestion` is required (every pipeline has a source).\n- `transformation` and `delivery` are optional; a missing stage is\n  rendered as an EmptyOperator in the DAG so downstream stages still\n  depend on its completion.\n- `validation` is a list \u2014 each rule runs in parallel after\n  transformation and gates the delivery stage.",
       "properties": {
         "ingestion": {
-          "discriminator": {
-            "mapping": {
-              "http_api": "#/$defs/HttpApiSourceConfig",
-              "jdbc": "#/$defs/JdbcSourceConfig",
-              "s3_csv": "#/$defs/S3CsvSourceConfig"
-            },
-            "propertyName": "type"
-          },
-          "oneOf": [
+          "anyOf": [
             {
-              "$ref": "#/$defs/S3CsvSourceConfig"
+              "discriminator": {
+                "mapping": {
+                  "http_api": "#/$defs/HttpApiSourceConfig",
+                  "jdbc": "#/$defs/JdbcSourceConfig",
+                  "minio_csv": "#/$defs/MinioCsvSourceConfig",
+                  "s3_csv": "#/$defs/S3CsvSourceConfig"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/S3CsvSourceConfig"
+                },
+                {
+                  "$ref": "#/$defs/HttpApiSourceConfig"
+                },
+                {
+                  "$ref": "#/$defs/JdbcSourceConfig"
+                },
+                {
+                  "$ref": "#/$defs/MinioCsvSourceConfig"
+                }
+              ]
             },
             {
-              "$ref": "#/$defs/HttpApiSourceConfig"
-            },
-            {
-              "$ref": "#/$defs/JdbcSourceConfig"
+              "type": "null"
             }
           ],
+          "default": null,
           "title": "Ingestion"
         },
         "transformation": {
@@ -219,16 +247,12 @@
             {
               "discriminator": {
                 "mapping": {
-                  "dbt": "#/$defs/DbtTransformConfig",
                   "spark": "#/$defs/SparkTransformConfig",
                   "sql": "#/$defs/SqlTransformConfig"
                 },
                 "propertyName": "type"
               },
               "oneOf": [
-                {
-                  "$ref": "#/$defs/DbtTransformConfig"
-                },
                 {
                   "$ref": "#/$defs/SqlTransformConfig"
                 },
@@ -274,6 +298,7 @@
             {
               "discriminator": {
                 "mapping": {
+                  "postgres_table": "#/$defs/PostgresTableDestinationConfig",
                   "s3_publish": "#/$defs/S3PublishDestinationConfig",
                   "slack_notify": "#/$defs/SlackNotifyDestinationConfig",
                   "webhook": "#/$defs/WebhookDestinationConfig"
@@ -289,6 +314,9 @@
                 },
                 {
                   "$ref": "#/$defs/WebhookDestinationConfig"
+                },
+                {
+                  "$ref": "#/$defs/PostgresTableDestinationConfig"
                 }
               ]
             },
@@ -300,10 +328,32 @@
           "title": "Delivery"
         }
       },
-      "required": [
-        "ingestion"
-      ],
       "title": "PipelineStages",
+      "type": "object"
+    },
+    "PostgresTableDestinationConfig": {
+      "additionalProperties": false,
+      "description": "Confirm delivery of a table to the local Postgres data warehouse.",
+      "properties": {
+        "type": {
+          "const": "postgres_table",
+          "enum": [
+            "postgres_table"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "table": {
+          "description": "Fully-qualified target table, e.g. 'analytics.clean_orders'.",
+          "title": "Table",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "table"
+      ],
+      "title": "PostgresTableDestinationConfig",
       "type": "object"
     },
     "RowCountValidation": {
@@ -319,8 +369,16 @@
           "type": "string"
         },
         "connection_id": {
-          "title": "Connection Id",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Connection Id"
         },
         "table": {
           "title": "Table",
@@ -348,7 +406,6 @@
       },
       "required": [
         "type",
-        "connection_id",
         "table"
       ],
       "title": "RowCountValidation",
@@ -544,8 +601,16 @@
           "type": "string"
         },
         "connection_id": {
-          "title": "Connection Id",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Connection Id"
         },
         "table": {
           "title": "Table",
@@ -562,7 +627,6 @@
       },
       "required": [
         "type",
-        "connection_id",
         "table",
         "expected_columns"
       ],
@@ -649,7 +713,7 @@
     },
     "SqlTransformConfig": {
       "additionalProperties": false,
-      "description": "Execute a SQL script against a configured connection.",
+      "description": "Execute SQL against Postgres \u2014 either inline or from a file.",
       "properties": {
         "type": {
           "const": "sql",
@@ -659,13 +723,31 @@
           "title": "Type",
           "type": "string"
         },
-        "connection_id": {
-          "title": "Connection Id",
-          "type": "string"
+        "sql": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Inline SQL to execute.",
+          "title": "Sql"
         },
         "sql_file": {
-          "title": "Sql File",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Path to a .sql file (used when sql is not set).",
+          "title": "Sql File"
         },
         "parameters": {
           "title": "Parameters",
@@ -673,9 +755,7 @@
         }
       },
       "required": [
-        "type",
-        "connection_id",
-        "sql_file"
+        "type"
       ],
       "title": "SqlTransformConfig",
       "type": "object"
@@ -773,7 +853,5 @@
     "stages"
   ],
   "title": "PipelineConfig",
-  "type": "object",
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://datafabrik.dev/schemas/pipeline_config.schema.json"
+  "type": "object"
 }
