@@ -38,7 +38,14 @@ class WebhookDestinationConfig(_DestinationBase):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class PostgresTableDestinationConfig(_DestinationBase):
+    """Confirm delivery of a table to the local Postgres data warehouse."""
+
+    type: Literal["postgres_table"]
+    table: str = Field(description="Fully-qualified target table, e.g. 'analytics.clean_orders'.")
+
+
 DestinationConfig = Annotated[
-    Union[S3PublishDestinationConfig, SlackNotifyDestinationConfig, WebhookDestinationConfig],
+    Union[S3PublishDestinationConfig, SlackNotifyDestinationConfig, WebhookDestinationConfig, PostgresTableDestinationConfig],
     Field(discriminator="type"),
 ]

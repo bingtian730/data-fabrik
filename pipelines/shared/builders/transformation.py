@@ -64,10 +64,25 @@ def sql(
     dag: DAG,
 ) -> BaseOperator:
     def _run(**_):
-        from airflow.providers.postgres.hooks.postgres import PostgresHook
-        hook = PostgresHook(postgres_conn_id=stage_config.connection_id)
-        hook.run(stage_config.sql)
-        print(f"[sql] executed successfully")
+        import os
+        from pathlib import Path
+        from sqlalchemy import create_engine, text as sa_text
+
+        if stage_config.sql:
+            sql_str = stage_config.sql
+        elif stage_config.sql_file:
+            sql_str = Path(stage_config.sql_file).read_text()
+        else:
+            raise ValueError("SqlTransformConfig requires either 'sql' or 'sql_file'")
+
+        db_url = os.environ["DATABASE_URL"]
+        eng = create_engine(db_url, pool_pre_ping=True)
+        with eng.begin() as conn:
+            for statement in sql_str.split(";"):
+                stmt = statement.strip()
+                if stmt:
+                    conn.execute(sa_text(stmt))
+        print("[sql] executed successfully")
 
     return PythonOperator(task_id=stage, python_callable=_run, dag=dag)
 

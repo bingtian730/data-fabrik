@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import TYPE_CHECKING
 
 import boto3
@@ -11,6 +12,7 @@ from pipelines.shared.registry import register
 from pipelines.shared.schema.sources import (
     HttpApiSourceConfig,
     JdbcSourceConfig,
+    MinioCsvSourceConfig,
     S3CsvSourceConfig,
 )
 
@@ -159,6 +161,55 @@ def _jdbc_log(conn, pipeline_id, table, rows, wm_from, wm_to, duration, s3_path,
         )
     conn.commit()
     print(f"[jdbc] logged run — status={status}, duration={duration}s")
+
+
+@register("ingestion", "minio_csv")
+def minio_csv(
+    *,
+    stage: str,
+    stage_config: MinioCsvSourceConfig,
+    pipeline: PipelineConfig,
+    dag: DAG,
+) -> BaseOperator:
+    def _run(**_):
+        import io
+        import csv
+        import os
+        from sqlalchemy import create_engine, text
+
+        s3 = _s3_client()
+        obj = s3.get_object(Bucket=stage_config.bucket, Key=stage_config.key)
+        content = obj["Body"].read().decode("utf-8-sig")
+        reader = csv.DictReader(io.StringIO(content))
+        rows = list(reader)
+        if not rows:
+            print(f"[minio_csv] warning: no data rows in s3://{stage_config.bucket}/{stage_config.key}")
+            return
+
+        fieldnames = list(reader.fieldnames or [])
+        table = stage_config.table
+
+        def _safe(s: str) -> str:
+            return re.sub(r"[^a-z0-9_]", "_", s.strip().lower())
+
+        safe_cols = [_safe(c) for c in fieldnames]
+        col_defs = ", ".join(f'"{c}" TEXT' for c in safe_cols)
+        col_list = ", ".join(f'"{c}"' for c in safe_cols)
+        placeholders = ", ".join(f":{c}" for c in safe_cols)
+
+        db_url = os.environ["DATABASE_URL"]
+        eng = create_engine(db_url, pool_pre_ping=True)
+        with eng.begin() as conn:
+            conn.execute(text("CREATE SCHEMA IF NOT EXISTS raw"))
+            conn.execute(text(f'DROP TABLE IF EXISTS raw."{table}"'))
+            conn.execute(text(f'CREATE TABLE raw."{table}" ({col_defs}, uploaded_at TIMESTAMPTZ DEFAULT now())'))
+            for row in rows:
+                data = {_safe(k): (v or "").strip() or None for k, v in row.items()}
+                conn.execute(text(f'INSERT INTO raw."{table}" ({col_list}) VALUES ({placeholders})'), data)
+
+        print(f"[minio_csv] loaded {len(rows)} rows → raw.\"{table}\"")
+
+    return PythonOperator(task_id=stage, python_callable=_run, dag=dag)
 
 
 @register("ingestion", "jdbc")

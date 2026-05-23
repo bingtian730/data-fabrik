@@ -22,11 +22,11 @@ class DbtTransformConfig(_TransformBase):
 
 
 class SqlTransformConfig(_TransformBase):
-    """Execute a SQL script against a configured connection."""
+    """Execute SQL against Postgres — either inline or from a file."""
 
     type: Literal["sql"]
-    connection_id: str
-    sql_file: str
+    sql: str | None = Field(default=None, description="Inline SQL to execute.")
+    sql_file: str | None = Field(default=None, description="Path to a .sql file (used when sql is not set).")
     parameters: dict[str, Any] = Field(default_factory=dict)
 
 

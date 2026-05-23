@@ -8,6 +8,7 @@ from airflow.operators.python import PythonOperator
 
 from pipelines.shared.registry import register
 from pipelines.shared.schema.destinations import (
+    PostgresTableDestinationConfig,
     S3PublishDestinationConfig,
     SlackNotifyDestinationConfig,
     WebhookDestinationConfig,
@@ -76,6 +77,27 @@ def slack_notify(
         print(f"[slack_notify] sent to {stage_config.channel}: {message}")
 
     return PythonOperator(task_id=stage, python_callable=_run, provide_context=True, dag=dag)
+
+
+@register("delivery", "postgres_table")
+def postgres_table(
+    *,
+    stage: str,
+    stage_config: PostgresTableDestinationConfig,
+    pipeline: PipelineConfig,
+    dag: DAG,
+) -> BaseOperator:
+    def _run(**_):
+        import os
+        from sqlalchemy import create_engine, text
+
+        eng = create_engine(os.environ["DATABASE_URL"], pool_pre_ping=True)
+        with eng.connect() as conn:
+            count = conn.execute(text(f"SELECT COUNT(*) FROM {stage_config.table}")).scalar()
+            conn.execute(text(f"ANALYZE {stage_config.table}"))
+        print(f"[postgres_table] delivered {count} rows → {stage_config.table}")
+
+    return PythonOperator(task_id=stage, python_callable=_run, dag=dag)
 
 
 @register("delivery", "webhook")

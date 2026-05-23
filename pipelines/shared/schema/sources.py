@@ -49,7 +49,16 @@ class JdbcSourceConfig(_SourceBase):
     dest_prefix: str | None = None
 
 
+class MinioCsvSourceConfig(_SourceBase):
+    """Load a CSV file from MinIO into a Postgres raw schema table."""
+
+    type: Literal["minio_csv"]
+    bucket: str = "datafabrik-raw"
+    key: str = Field(description="Object key of the CSV in MinIO, e.g. 'wizard/orders/orders_20260522.csv'.")
+    table: str = Field(description="Target table name in the raw schema, e.g. 'orders'.")
+
+
 SourceConfig = Annotated[
-    Union[S3CsvSourceConfig, HttpApiSourceConfig, JdbcSourceConfig],
+    Union[S3CsvSourceConfig, HttpApiSourceConfig, JdbcSourceConfig, MinioCsvSourceConfig],
     Field(discriminator="type"),
 ]

@@ -9,6 +9,7 @@ import csv
 import io
 import re
 
+import boto3
 import requests as _requests
 import yaml
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -18,12 +19,24 @@ from sqlalchemy import create_engine, text
 
 app = FastAPI(title="DataFabrik API", version="0.1.0")
 
-DATABASE_URL = os.environ["DATABASE_URL"]
-AIRFLOW_URL  = os.environ.get("AIRFLOW_URL",      "http://airflow-webserver:8080")
-AIRFLOW_USER = os.environ.get("AIRFLOW_USER",     "admin")
-AIRFLOW_PASS = os.environ.get("AIRFLOW_PASSWORD", "admin")
+DATABASE_URL  = os.environ["DATABASE_URL"]
+AIRFLOW_URL   = os.environ.get("AIRFLOW_URL",      "http://airflow-webserver:8080")
+AIRFLOW_USER  = os.environ.get("AIRFLOW_USER",     "admin")
+AIRFLOW_PASS  = os.environ.get("AIRFLOW_PASSWORD", "admin")
+S3_ENDPOINT   = os.environ.get("S3_ENDPOINT_URL",  "http://minio:9000")
+S3_ACCESS_KEY = os.environ.get("AWS_ACCESS_KEY_ID",     "minioadmin")
+S3_SECRET_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "minioadmin")
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+
+
+def _s3_client():
+    return boto3.client(
+        "s3",
+        endpoint_url=S3_ENDPOINT,
+        aws_access_key_id=S3_ACCESS_KEY,
+        aws_secret_access_key=S3_SECRET_KEY,
+    )
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -196,9 +209,9 @@ def api_trigger_pipeline(dag_id: str) -> dict:
         json={"is_paused": False},
         timeout=10,
     )
-    # Retry up to 6 times (18 s) while the scheduler loads the DagBag
+    # Retry up to 15 times (75 s) while the scheduler re-scans the DAG file
     last: dict = {}
-    for _ in range(6):
+    for _ in range(15):
         resp = _requests.post(
             f"{AIRFLOW_URL}/api/v1/dags/{dag_id}/dagRuns",
             auth=(AIRFLOW_USER, AIRFLOW_PASS),
@@ -211,10 +224,10 @@ def api_trigger_pipeline(dag_id: str) -> dict:
             last = resp.json()
         except Exception:
             last = {"status": resp.status_code}
-        if "DagBag" in str(last) or "does not exist" in str(last):
-            _time.sleep(3)
+        if resp.status_code == 404 or any(kw in str(last) for kw in ("DagBag", "not found", "does not exist")):
+            _time.sleep(5)
             continue
-        raise HTTPException(status_code=resp.status_code, detail=last)
+        raise HTTPException(status_code=resp.status_code, detail=str(last))
     raise HTTPException(status_code=503, detail=f"DAG not loaded after retries: {last}")
 
 
@@ -549,6 +562,9 @@ select.form-control{cursor:pointer}
     <button class="nav-btn" onclick="nav('workflow')" id="nav-workflow">
       <span class="icon">🧹</span> Workflow Wizard
     </button>
+    <button class="nav-btn" onclick="nav('manage')" id="nav-manage">
+      <span class="icon">🗑️</span> Manage Pipelines
+    </button>
   </div>
   <div class="sb-footer">Local Development</div>
 </nav>
@@ -825,14 +841,25 @@ select.form-control{cursor:pointer}
     </div>
   </div>
 
+  <!-- MANAGE PIPELINES -->
+  <div id="sec-manage" class="section iframe-section">
+    <div class="iframe-bar">
+      <span>🗑️ Manage Pipelines — delete generated pipeline configs and Airflow DAGs</span>
+    </div>
+    <div class="iframe-wrap">
+      <iframe id="frame-manage" title="Manage Pipelines" allowfullscreen></iframe>
+    </div>
+  </div>
+
 </main>
 </div>
 
 <script>
 // ── Navigation ──────────────────────────────────────────────────────────
-const SECTIONS = ['home','pipelines','airflow','metabase','minio','builder','onboard','upload','workflow'];
+const SECTIONS = ['home','pipelines','airflow','metabase','minio','builder','onboard','upload','workflow','manage'];
 const IFRAMES  = {airflow:'/tools/airflow', metabase:'http://localhost:3001', minio:'http://localhost:9002',
-                  onboard:'/onboard?embed=1', upload:'/upload?embed=1', workflow:'/workflow?embed=1'};
+                  onboard:'/onboard?embed=1', upload:'/upload?embed=1', workflow:'/workflow?embed=1',
+                  manage:'/manage?embed=1'};
 // Airflow is proxied via nginx on :8082 which strips X-Frame-Options
 const iframeLoaded = {};
 
@@ -1856,9 +1883,11 @@ async def api_workflow_upload(table: str = Form(...), file: UploadFile = File(..
         {"name": c.strip(), "type": _infer_type(samples[c]), "samples": samples[c]}
         for c in fieldnames
     ]
-    col_defs     = ", ".join(f'"{_safe_name(c)}" TEXT' for c in fieldnames)
-    col_list     = ", ".join(f'"{_safe_name(c)}"' for c in fieldnames)
-    placeholders = ", ".join(f":{_safe_name(c)}" for c in fieldnames)
+    # Step 1: insert into Postgres raw schema
+    safe_cols    = [_safe_name(c) for c in fieldnames]
+    col_defs     = ", ".join(f'"{c}" TEXT' for c in safe_cols)
+    col_list     = ", ".join(f'"{c}"' for c in safe_cols)
+    placeholders = ", ".join(f":{c}" for c in safe_cols)
     with engine.begin() as conn:
         conn.execute(text("CREATE SCHEMA IF NOT EXISTS raw"))
         conn.execute(text(f'DROP TABLE IF EXISTS raw."{table_name}"'))
@@ -1869,7 +1898,24 @@ async def api_workflow_upload(table: str = Form(...), file: UploadFile = File(..
         for row in rows:
             data = {_safe_name(k): (v or "").strip() or None for k, v in row.items()}
             conn.execute(text(f'INSERT INTO raw."{table_name}" ({col_list}) VALUES ({placeholders})'), data)
-    return {"table_name": table_name, "rows": len(rows), "columns": columns}
+    # Step 2: upload to MinIO raw folder
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    s3_bucket = "datafabrik-raw"
+    s3_key    = f"wizard/{table_name}/{table_name}_{ts}.csv"
+    _s3_client().put_object(
+        Bucket=s3_bucket,
+        Key=s3_key,
+        Body=content,
+        ContentType="text/csv",
+    )
+    return {
+        "table_name": table_name,
+        "rows": len(rows),
+        "columns": columns,
+        "postgres_table": f"raw.{table_name}",
+        "s3_bucket": s3_bucket,
+        "s3_key": s3_key,
+    }
 
 
 @app.post("/api/workflow/build-clean")
@@ -1946,6 +1992,8 @@ def api_build_agg(payload: _BuildAggPayload) -> dict:
 
 class _ProcessPayload(BaseModel):
     table: str
+    s3_bucket: str
+    s3_key: str
     columns: list[_ColConfig]
     filters: list[_FilterConfig] = []
     group_by: list[str] = []
@@ -1954,45 +2002,254 @@ class _ProcessPayload(BaseModel):
 
 @app.post("/api/workflow/process")
 def api_process(payload: _ProcessPayload) -> dict:
-    """Clean, aggregate, and load data directly into Postgres — no Airflow or dbt."""
+    """Generate clean + (optional) agg pipelines and trigger them on Airflow."""
     table = _safe_name(payload.table)
     if not table:
         raise HTTPException(status_code=400, detail="Invalid table name")
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    cols    = [c.model_dump() for c in payload.columns]
-    filters = [f.model_dump() for f in payload.filters]
-
+    ts         = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    cols       = [c.model_dump() for c in payload.columns]
+    filters    = [f.model_dump() for f in payload.filters]
     clean_name = f"clean_{table}_{ts}"
-    clean_sql  = _generate_clean_sql(table, cols, filters)
-    with engine.begin() as conn:
-        conn.execute(text("CREATE SCHEMA IF NOT EXISTS analytics"))
-        conn.execute(text(f'DROP TABLE IF EXISTS analytics."{clean_name}"'))
-        conn.execute(text(f'CREATE TABLE analytics."{clean_name}" AS\n{clean_sql}'))
-        clean_rows = conn.execute(text(f'SELECT COUNT(*) FROM analytics."{clean_name}"')).scalar()
+    clean_pid  = f"wiz_clean_{table}_{ts}"
 
-    result: dict = {"clean_table": clean_name, "clean_rows": clean_rows,
-                    "agg_table": None, "agg_rows": None}
+    # ── Clean pipeline ─────────────────────────────────────────────────────────
+    clean_sql = _generate_clean_sql(table, cols, filters)
+    clean_transform = (
+        f'CREATE SCHEMA IF NOT EXISTS analytics;\n'
+        f'DROP TABLE IF EXISTS analytics."{clean_name}";\n'
+        f'CREATE TABLE analytics."{clean_name}" AS\n{clean_sql};'
+    )
+    _CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
+    (_CONFIGS_DIR / f"{clean_pid}.sql").write_text(clean_transform)
+    (_CONFIGS_DIR / f"{clean_pid}.yaml").write_text(
+        f"pipeline_id: {clean_pid}\n"
+        f"description: Wizard cleaning pipeline for {table}\n"
+        f"tags: [generated, wizard, {table}]\n\n"
+        f"schedule:\n  preset: \"@once\"\n  retries: 1\n\n"
+        f"stages:\n"
+        f"  ingestion:\n"
+        f"    type: minio_csv\n"
+        f"    bucket: {payload.s3_bucket}\n"
+        f"    key: {payload.s3_key}\n"
+        f"    table: {table}\n\n"
+        f"  transformation:\n"
+        f"    type: sql\n"
+        f"    sql_file: /opt/airflow/configs/pipelines/{clean_pid}.sql\n\n"
+        f"  delivery:\n"
+        f"    type: postgres_table\n"
+        f'    table: analytics."{clean_name}"\n'
+    )
+    api_trigger_pipeline(clean_pid)
 
+    result: dict = {
+        "clean_pipeline_id": clean_pid,
+        "clean_table": f'analytics."{clean_name}"',
+        "clean_airflow_url": f"http://localhost:8082/dags/{clean_pid}/grid",
+        "agg_pipeline_id": None,
+        "agg_table": None,
+        "agg_airflow_url": None,
+    }
+
+    # ── Agg pipeline (optional) ────────────────────────────────────────────────
     if payload.metrics:
         agg_name = f"agg_{table}_{ts}"
-        agg_sql  = _generate_agg_sql(
-            clean_name, payload.group_by,
-            [m.model_dump() for m in payload.metrics],
+        agg_pid  = f"wiz_agg_{table}_{ts}"
+        agg_sql  = _generate_agg_sql(clean_name, payload.group_by,
+                                     [m.model_dump() for m in payload.metrics])
+        agg_transform = (
+            f'CREATE SCHEMA IF NOT EXISTS analytics;\n'
+            f'DROP TABLE IF EXISTS analytics."{agg_name}";\n'
+            f'CREATE TABLE analytics."{agg_name}" AS\n{agg_sql};'
         )
-        with engine.begin() as conn:
-            conn.execute(text(f'DROP TABLE IF EXISTS analytics."{agg_name}"'))
-            conn.execute(text(f'CREATE TABLE analytics."{agg_name}" AS\n{agg_sql}'))
-            agg_rows = conn.execute(text(f'SELECT COUNT(*) FROM analytics."{agg_name}"')).scalar()
-        result["agg_table"] = agg_name
-        result["agg_rows"]  = agg_rows
-
-    final = result["agg_table"] or clean_name
-    with engine.connect() as conn:
-        rs = conn.execute(text(f'SELECT * FROM analytics."{final}" LIMIT 20'))
-        result["preview"] = {"columns": list(rs.keys()), "rows": [list(r) for r in rs.fetchall()]}
+        (_CONFIGS_DIR / f"{agg_pid}.sql").write_text(agg_transform)
+        (_CONFIGS_DIR / f"{agg_pid}.yaml").write_text(
+            f"pipeline_id: {agg_pid}\n"
+            f"description: Wizard aggregation pipeline for {table}\n"
+            f"tags: [generated, wizard, {table}]\n\n"
+            f"schedule:\n  preset: \"@once\"\n  retries: 2\n\n"
+            f"stages:\n"
+            f"  transformation:\n"
+            f"    type: sql\n"
+            f"    sql_file: /opt/airflow/configs/pipelines/{agg_pid}.sql\n\n"
+            f"  delivery:\n"
+            f"    type: postgres_table\n"
+            f'    table: analytics."{agg_name}"\n'
+        )
+        api_trigger_pipeline(agg_pid)
+        result["agg_pipeline_id"] = agg_pid
+        result["agg_table"] = f'analytics."{agg_name}"'
+        result["agg_airflow_url"] = f"http://localhost:8082/dags/{agg_pid}/grid"
 
     return result
+
+
+# ── Pipeline management API ────────────────────────────────────────────────────
+
+@app.get("/api/pipelines/list")
+def api_pipelines_list() -> dict:
+    """Return all generated pipeline configs with their metadata."""
+    pipelines = []
+    if _CONFIGS_DIR.is_dir():
+        for yaml_path in sorted(_CONFIGS_DIR.glob("*.yaml"), key=lambda p: p.stat().st_mtime, reverse=True):
+            pid = yaml_path.stem
+            sql_path = _CONFIGS_DIR / f"{pid}.sql"
+            try:
+                data = yaml.safe_load(yaml_path.read_text()) or {}
+            except Exception:
+                data = {}
+            pipelines.append({
+                "pipeline_id": pid,
+                "description": data.get("description", ""),
+                "tags": data.get("tags", []),
+                "created_at": datetime.fromtimestamp(yaml_path.stat().st_mtime, tz=timezone.utc).isoformat(),
+                "has_sql": sql_path.exists(),
+                "airflow_url": f"http://localhost:8082/dags/{pid}/grid",
+            })
+    return {"pipelines": pipelines}
+
+
+@app.delete("/api/pipelines/{pipeline_id}")
+def api_pipeline_delete(pipeline_id: str) -> dict:
+    """Delete pipeline config files and remove the DAG from Airflow."""
+    deleted = []
+    for ext in (".yaml", ".sql"):
+        p = _CONFIGS_DIR / f"{pipeline_id}{ext}"
+        if p.exists():
+            p.unlink()
+            deleted.append(str(p.name))
+    # Best-effort: delete from Airflow (ignore errors)
+    try:
+        _requests.delete(
+            f"{AIRFLOW_URL}/api/v1/dags/{pipeline_id}",
+            auth=(AIRFLOW_USER, AIRFLOW_PASS),
+            timeout=5,
+        )
+    except Exception:
+        pass
+    return {"deleted": deleted, "pipeline_id": pipeline_id}
+
+
+_MANAGE_HTML = (
+    '<!DOCTYPE html><html lang="en"><head>'
+    '<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+    '<title>DataFabrik — Manage Pipelines</title>'
+    '<style>'
+    '*{box-sizing:border-box;margin:0;padding:0}'
+    'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh}'
+    '.topbar{background:#1a1f2e;border-bottom:1px solid #2d3748;padding:14px 32px;display:flex;align-items:center;gap:14px}'
+    '.logo{width:28px;height:28px;background:#3182ce;border-radius:6px;display:flex;align-items:center;justify-content:center}'
+    '.logo svg{width:16px;height:16px;fill:none}'
+    '.topbar h1{font-size:1rem;font-weight:700}'
+    '.topbar a{margin-left:auto;font-size:.8rem;color:#63b3ed;text-decoration:none}'
+    '.page{max-width:900px;margin:0 auto;padding:32px 24px}'
+    '.hero{margin-bottom:28px}'
+    '.hero h2{font-size:1.4rem;font-weight:700;margin-bottom:6px}'
+    '.hero p{color:#a0aec0;font-size:.88rem}'
+    '.toolbar{display:flex;align-items:center;gap:12px;margin-bottom:16px}'
+    '.search-inp{background:#1a1f2e;border:1px solid #2d3748;border-radius:6px;padding:8px 14px;'
+    'color:#e2e8f0;font-size:.85rem;outline:none;flex:1;max-width:320px}'
+    '.search-inp:focus{border-color:#3182ce}'
+    '.count-label{font-size:.8rem;color:#4a5568;margin-left:auto}'
+    '.pipe-list{display:flex;flex-direction:column;gap:10px}'
+    '.pipe-card{background:#1a1f2e;border:1px solid #2d3748;border-radius:10px;'
+    'padding:16px 20px;display:flex;align-items:center;gap:16px;transition:border-color .15s}'
+    '.pipe-card:hover{border-color:#4a5568}'
+    '.pipe-card.deleting{opacity:.4;pointer-events:none}'
+    '.pipe-info{flex:1;min-width:0}'
+    '.pipe-id{font-family:monospace;font-size:.85rem;font-weight:700;color:#63b3ed;'
+    'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:3px}'
+    '.pipe-desc{font-size:.78rem;color:#718096;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
+    '.pipe-meta{font-size:.72rem;color:#4a5568;margin-top:4px}'
+    '.tag{display:inline-flex;align-items:center;background:#232a3b;border-radius:4px;'
+    'padding:2px 7px;font-size:.7rem;color:#718096;margin-right:4px}'
+    '.pipe-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}'
+    '.btn{display:inline-flex;align-items:center;gap:5px;padding:7px 16px;border-radius:7px;'
+    'font-size:.8rem;font-weight:600;cursor:pointer;border:none;transition:opacity .15s,background .15s;text-decoration:none}'
+    '.btn:disabled{opacity:.4;cursor:not-allowed}'
+    '.btn-ghost{background:#2d3748;color:#e2e8f0}.btn-ghost:hover{background:#3a4459}'
+    '.btn-danger{background:#742a2a;color:#fed7d7}.btn-danger:hover{background:#9b2c2c}'
+    '.btn-primary{background:#3182ce;color:#fff}.btn-primary:hover{background:#2b6cb0}'
+    '.empty{text-align:center;padding:60px 0;color:#4a5568;font-size:.9rem}'
+    '.spinner{width:14px;height:14px;border:2px solid #2d3748;border-top-color:#fc8181;'
+    'border-radius:50%;animation:spin .6s linear infinite;display:inline-block}'
+    '@keyframes spin{to{transform:rotate(360deg)}}'
+    '.toast{position:fixed;bottom:24px;right:24px;background:#276749;color:#9ae6b4;'
+    'padding:12px 20px;border-radius:8px;font-size:.85rem;font-weight:600;'
+    'box-shadow:0 4px 12px rgba(0,0,0,.4);animation:fadein .2s;z-index:999}'
+    '.toast.err{background:#742a2a;color:#fed7d7}'
+    '@keyframes fadein{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}'
+    '</style></head><body>'
+    '<div class="topbar">'
+    '<div class="logo"><svg viewBox="0 0 16 16">'
+    '<rect width="16" height="16" rx="3" fill="#3182ce"/>'
+    '<path d="M4 8h8M8 4v8" stroke="white" stroke-width="1.8" stroke-linecap="round"/>'
+    '</svg></div>'
+    '<h1>DataFabrik — Manage Pipelines</h1>'
+    '<a href="/">← Back to Portal</a>'
+    '</div>'
+    '<div class="page">'
+    '<div class="hero">'
+    '<h2>Generated Pipelines</h2>'
+    '<p>All pipelines created by the Workflow Wizard. Delete removes the config files and the Airflow DAG.</p>'
+    '</div>'
+    '<div class="toolbar">'
+    '<input class="search-inp" type="text" placeholder="Filter by pipeline ID…" oninput="applyFilter(this.value)">'
+    '<span class="count-label" id="count-label"></span>'
+    '</div>'
+    '<div class="pipe-list" id="pipe-list"><div class="empty">Loading…</div></div>'
+    '</div>'
+    '<script>'
+    'let ALL=[];'
+    'async function load(){'
+    'const r=await fetch("/api/pipelines/list");'
+    'const j=await r.json();'
+    'ALL=j.pipelines;render(ALL);}'
+    'function render(list){'
+    'const el=document.getElementById("pipe-list");'
+    'const n=list.length;'
+    'document.getElementById("count-label").textContent=n+" pipeline"+(n!==1?"s":"");'
+    'if(!n){el.innerHTML=\'<div class="empty">No generated pipelines found.</div>\';return;}'
+    'el.innerHTML=list.map(p=>{'
+    'const tags=p.tags.map(t=>\'<span class="tag">\'+t+\'</span>\').join("");'
+    'const created=new Date(p.created_at).toLocaleString();'
+    'return \'<div class="pipe-card" id="card-\'+p.pipeline_id+\'" data-pid="\'+p.pipeline_id+\'">\''
+    '+\'<div class="pipe-info">\''
+    '+\'<div class="pipe-id">\'+p.pipeline_id+\'</div>\''
+    '+\'<div class="pipe-desc">\'+( p.description||"—")+\'</div>\''
+    '+\'<div class="pipe-meta">\'+tags+\' &nbsp;·&nbsp; Created \'+created+\'</div>\''
+    '+\'</div>\''
+    '+\'<div class="pipe-actions">\''
+    '+\'<a class="btn btn-ghost" href="\'+p.airflow_url+\'" target="_blank">Airflow &#8599;</a>\''
+    '+\'<button class="btn btn-danger delbtn">Delete</button>\''
+    '+\'</div></div>\';}).join("");'
+    'el.querySelectorAll(".delbtn").forEach(btn=>{'
+    'btn.addEventListener("click",()=>deletePipeline(btn.closest(".pipe-card").dataset.pid));});}'
+    'function applyFilter(q){'
+    'const f=q.toLowerCase();'
+    'render(f?ALL.filter(p=>p.pipeline_id.toLowerCase().includes(f)||p.description.toLowerCase().includes(f)):ALL);}'
+    'async function deletePipeline(pid){'
+    'if(!confirm("Delete pipeline \\""+pid+"\\"? This removes config files and the Airflow DAG."))return;'
+    'const card=document.getElementById("card-"+pid);'
+    'if(card)card.classList.add("deleting");'
+    'const r=await fetch("/api/pipelines/"+pid,{method:"DELETE"});'
+    'if(r.ok){ALL=ALL.filter(p=>p.pipeline_id!==pid);render(ALL);toast("Deleted "+pid);}'
+    'else{if(card)card.classList.remove("deleting");toast("Delete failed",true);}}'
+    'function toast(msg,err){'
+    'const t=document.createElement("div");'
+    't.className="toast"+(err?" err":"");t.textContent=msg;'
+    'document.body.appendChild(t);setTimeout(()=>t.remove(),3000);}'
+    'load();'
+    '</script>'
+    '<script>if(location.search.includes("embed=1"))document.querySelectorAll(\'a[href="/"]\').forEach(e=>e.style.display="none");</script>'
+    '</body></html>'
+)
+
+
+@app.get("/manage", response_class=HTMLResponse)
+def manage_page() -> str:
+    """Pipeline management — list and delete generated pipelines."""
+    return _MANAGE_HTML
 
 
 _WORKFLOW_HTML = (
@@ -2001,14 +2258,15 @@ _WORKFLOW_HTML = (
     '<title>DataFabrik — Workflow Wizard</title>'
     '<style>'
     '*{box-sizing:border-box;margin:0;padding:0}'
-    'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh}'
-    '.topbar{background:#1a1f2e;border-bottom:1px solid #2d3748;padding:14px 32px;display:flex;align-items:center;gap:14px}'
+    'html,body{height:100%;overflow:hidden}'
+    'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0f1117;color:#e2e8f0;display:flex;flex-direction:column}'
+    '.topbar{background:#1a1f2e;border-bottom:1px solid #2d3748;padding:14px 32px;display:flex;align-items:center;gap:14px;flex-shrink:0}'
     '.logo{width:28px;height:28px;background:#3182ce;border-radius:6px;display:flex;align-items:center;justify-content:center}'
     '.logo svg{width:16px;height:16px}'
     '.topbar h1{font-size:1rem;font-weight:700}'
     '.topbar a{margin-left:auto;font-size:.8rem;color:#63b3ed;text-decoration:none}'
-    '.page{max-width:820px;margin:0 auto;padding:32px 24px}'
-    '.stepper{display:flex;align-items:center;margin-bottom:36px}'
+    '.page{flex:1;min-height:0;overflow-y:auto;max-width:820px;margin:0 auto;padding:20px 24px;width:100%}'
+    '.stepper{display:flex;align-items:center;margin-bottom:20px}'
     '.si{display:flex;align-items:center;gap:8px;font-size:.8rem;color:#4a5568}'
     '.si.active{color:#63b3ed;font-weight:600}'
     '.si.done{color:#48bb78}'
@@ -2100,6 +2358,15 @@ _WORKFLOW_HTML = (
     '.tpick-name{font-size:.9rem;font-weight:600;font-family:monospace;color:#63b3ed}'
     '.tpick-meta{font-size:.75rem;color:#4a5568}'
     '.btn-sm{padding:6px 14px!important;font-size:.8rem!important}'
+    '.preview-wrap{overflow-x:auto}'
+    '.preview-tbl{width:100%;border-collapse:collapse;font-size:.75rem}'
+    '.preview-tbl th{background:#232a3b;color:#718096;padding:6px 10px;text-align:left;border-bottom:1px solid #2d3748;white-space:nowrap}'
+    '.preview-tbl td{padding:5px 10px;border-bottom:1px solid #1a1f2e;color:#a0aec0;white-space:nowrap}'
+    '.preview-tbl tr:last-child td{border-bottom:none}'
+    '.row-count{font-size:.75rem;color:#4a5568;margin-top:8px}'
+    '.upload-locs{display:flex;flex-direction:column;gap:8px}'
+    '.upload-loc{font-size:.85rem;color:#68d391;display:flex;align-items:flex-start;gap:8px;line-height:1.5}'
+    '.upload-loc code{font-family:monospace;color:#63b3ed;font-size:.8rem;word-break:break-all}'
     '</style></head><body>'
     '<div class="topbar">'
     '<div class="logo"><svg viewBox="0 0 16 16" fill="none">'
@@ -2120,63 +2387,66 @@ _WORKFLOW_HTML = (
     '<div class="si" id="si4"><div class="si-circle">4</div>Results</div>'
     '</div>'
     '<div id="p1" class="panel active">'
-    '<div class="panel-head"><h2>Upload your data</h2>'
-    '<p>Drop one or more CSV files — columns and types will be detected automatically.</p></div>'
-    '<div class="card">'
-    '<div class="drop-zone" id="dz">'
-    '<input type="file" id="fi" accept=".csv" multiple onchange="onFile(this)">'
-    '<div id="dz-idle"><span class="dz-icon">📂</span>'
-    '<div class="dz-main">Drop CSV files here, or click to browse</div>'
-    '<div class="dz-sub">Select one or more .csv files</div></div>'
-    '<div id="dz-done" style="display:none"><span class="dz-icon">📋</span>'
-    '<div id="dz-filelist" style="text-align:left;max-height:100px;overflow-y:auto;padding:0 8px"></div>'
-    '</div>'
-    '</div>'
-    '</div>'
-    '<div id="table-picker" class="table-picker" style="display:none"></div>'
+    '<iframe id="upload-frame" src="/upload?embed=1"'
+    ' style="width:100%;border:none;border-radius:8px;height:360px;display:block;transition:height .15s"></iframe>'
+    '<div id="s1-continue" style="display:none">'
     '<div class="panel-footer">'
-    '<button class="btn btn-primary" id="s1-btn" onclick="doUpload()" disabled>Upload Files &#8594;</button>'
-    '<div id="s1-status"></div>'
+    '<button class="btn btn-primary"'
+    ' onclick="renderStep2({table_name:state.table,rows:state.rows,columns:state.columns})">Continue to Cleaning &#8594;</button>'
+    '</div>'
     '</div>'
     '</div>'
     '<div id="p2" class="panel">'
     '<div class="panel-head"><h2>Configure cleaning</h2>'
-    '<p>Choose which columns to keep, set their output types, and add row filters.</p></div>'
+    '<p>Uncheck columns to drop them, rename output names, cast types, and add WHERE filters.</p></div>'
     '<div class="source-bar" id="src-bar"></div>'
     '<div class="card">'
-    '<div class="section-title">Columns</div>'
+    '<div class="section-title">Columns'
+    '<span style="font-size:.72rem;color:#4a5568;font-weight:400;text-transform:none;letter-spacing:0;margin-left:8px">'
+    'Uncheck to exclude &nbsp;·&nbsp; Edit output name &nbsp;·&nbsp; Change cast type</span>'
+    '</div>'
     '<div class="col-wrap"><table class="col-tbl">'
     '<thead><tr>'
-    '<th></th><th>Source column</th><th>Output name</th><th>Type</th><th>Sample values</th>'
+    '<th title="Include in output">Keep</th><th>Source column</th>'
+    '<th>Output name <span style="font-weight:400;color:#4a5568;font-size:.68rem">(rename)</span></th>'
+    '<th>Cast type</th><th>Sample values</th>'
     '</tr></thead>'
     '<tbody id="col-tbody"></tbody>'
     '</table></div>'
     '</div>'
     '<div class="card">'
-    '<div class="section-title">Filters '
+    '<div class="section-title">Row filters '
     '<button class="btn-link" onclick="addFilter()">+ Add filter</button>'
     '</div>'
+    '<div style="font-size:.75rem;color:#4a5568;margin-bottom:10px">Only rows matching ALL filters will be included in the output.</div>'
     '<div class="filter-list" id="filter-list"></div>'
     '<div class="no-filters" id="no-filters">No filters — all rows will be included</div>'
     '</div>'
     '<div class="panel-footer">'
     '<button class="btn btn-ghost" onclick="goStep(1)">&#8592; Back</button>'
-    '<button class="btn btn-primary" onclick="renderStep3();goStep(3)">Next: Configure Aggregation &#8594;</button>'
+    '<button class="btn btn-primary" onclick="renderStep3();goStep(3)" id="s2-next">Next: Configure Aggregation &#8594;</button>'
     '</div>'
     '</div>'
     '<div id="p3" class="panel">'
     '<div class="panel-head"><h2>Configure Aggregation</h2>'
-    '<p>Optional — choose columns to group by and define metrics. Skip by clicking Process &amp; Load without adding any metrics.</p></div>'
+    '<p>Optional — group your cleaned data and compute metrics. Leave empty to load the cleaned table as-is.</p></div>'
     '<div class="card">'
-    '<div class="section-title">Group By Columns</div>'
+    '<div class="section-title">Group By</div>'
+    '<div style="font-size:.75rem;color:#4a5568;margin-bottom:12px">Select the columns to group rows by (like SQL GROUP BY). Required if you add any metrics.</div>'
     '<div class="chk-grid" id="gb-grid"></div>'
     '</div>'
     '<div class="card">'
     '<div class="section-title">Metrics '
     '<button class="btn-link" onclick="addMetric()">+ Add metric</button>'
     '</div>'
+    '<div style="font-size:.75rem;color:#4a5568;margin-bottom:10px">Each metric applies an aggregate function to a column — e.g. SUM(revenue), COUNT(*), AVG(score).</div>'
+    '<div style="display:none;grid-template-columns:1fr 90px 1fr 28px;gap:8px;margin-bottom:6px;padding:0 2px" id="metric-header">'
+    '<span style="font-size:.7rem;color:#4a5568">Column</span>'
+    '<span style="font-size:.7rem;color:#4a5568">Function</span>'
+    '<span style="font-size:.7rem;color:#4a5568">Output name <span style="font-weight:400">(optional)</span></span>'
+    '<span></span></div>'
     '<div id="metric-list"></div>'
-    '<div id="no-metrics" style="font-size:.8rem;color:#4a5568;padding:10px 0">No metrics — cleaning output will be loaded as-is</div>'
+    '<div id="no-metrics" style="font-size:.8rem;color:#4a5568;padding:6px 0">No metrics — cleaning output will be loaded as-is</div>'
     '</div>'
     '<div class="panel-footer">'
     '<button class="btn btn-ghost" onclick="goStep(2)">&#8592; Back</button>'
@@ -2188,16 +2458,21 @@ _WORKFLOW_HTML = (
     '<div class="card">'
     '<div class="success-block">'
     '<span class="s-icon">&#9989;</span>'
-    '<h2>Data Loaded!</h2>'
-    '<div id="r-summary" style="font-size:.85rem;color:#a0aec0;margin:10px 0 20px"></div>'
-    '<a class="btn btn-primary" href="http://localhost:3001" target="_blank">View in Metabase &#8599;</a>'
+    '<h2>Pipelines Triggered!</h2>'
     '</div>'
+    '<div id="r-pipelines"></div>'
     '</div>'
-    '<div class="card">'
-    '<div class="section-title">Data Preview</div>'
-    '<div class="col-wrap" id="r-preview"></div>'
+    '<div class="card" style="font-size:.82rem;color:#718096;line-height:1.8">'
+    '<div style="font-weight:700;color:#e2e8f0;margin-bottom:10px">What happens next</div>'
+    '<div>&#9312; Airflow ingests your CSV from MinIO into <code style="color:#63b3ed">raw.*</code></div>'
+    '<div>&#9313; SQL transformation creates the analytics table in Postgres</div>'
+    '<div>&#9314; Delivery step confirms the table is ready in the data warehouse</div>'
+    '<div style="margin-top:8px">&#9315; Open Metabase and connect to the <code style="color:#63b3ed">datafabrik</code> database to visualize</div>'
     '</div>'
-    '<div class="panel-footer" style="justify-content:center;padding-top:16px;border-top:1px solid #2d3748;margin-top:8px">'
+    '<div style="text-align:center;margin-top:16px">'
+    '<a class="btn btn-primary" href="http://localhost:3001" target="_blank">Open Metabase &#8599;</a>'
+    '</div>'
+    '<div class="panel-footer" style="justify-content:center;padding-top:16px;border-top:1px solid #2d3748;margin-top:16px">'
     '<button class="btn btn-ghost" onclick="goStep(3)">&#8592; Back</button>'
     '</div>'
     '</div>'
@@ -2205,58 +2480,18 @@ _WORKFLOW_HTML = (
     '<script>'
     'const TYPES=["TEXT","INTEGER","NUMERIC","DATE","TIMESTAMP","BOOLEAN"];'
     'const OPS=[["=","equals"],["!=","not equals"],[">=","≥"],["<=","≤"],["LIKE","contains"],["IS NULL","is empty"],["IS NOT NULL","is not empty"]];'
-    'let state={table:"",columns:[],files:[]};'
-    'let uploadedTables=[];'
+    'let state={table:"",rows:0,columns:[],s3_bucket:"",s3_key:""};'
     'let filterSeq=0;'
-    'const dz=document.getElementById("dz");'
-    'dz.addEventListener("dragover",e=>{e.preventDefault();dz.classList.add("drag")});'
-    'dz.addEventListener("dragleave",()=>dz.classList.remove("drag"));'
-    'dz.addEventListener("drop",e=>{e.preventDefault();dz.classList.remove("drag");applyFiles(e.dataTransfer.files);});'
-    'function onFile(inp){if(inp.files.length)applyFiles(inp.files);}'
-    'function applyFiles(fileList){'
-    'const csvs=Array.from(fileList).filter(f=>f.name.toLowerCase().endsWith(".csv"));'
-    'if(!csvs.length)return;'
-    'state.files=csvs;'
-    'document.getElementById("dz-idle").style.display="none";'
-    'document.getElementById("dz-done").style.display="";'
-    'document.getElementById("dz-filelist").innerHTML=csvs.map(f=>'
-    '`<div class="dz-file-item">&#128196; ${f.name} <span class="dz-fsize">(${(f.size/1024).toFixed(1)} KB)</span></div>`'
-    ').join("");'
-    'dz.classList.add("done");'
-    'document.getElementById("table-picker").style.display="none";'
-    'document.getElementById("s1-btn").disabled=false;'
-    'document.getElementById("s1-status").innerHTML="";}'
-    'async function doUpload(){'
-    'const btn=document.getElementById("s1-btn");'
-    'const st=document.getElementById("s1-status");'
-    'btn.disabled=true;'
-    'uploadedTables=[];'
-    'for(let i=0;i<state.files.length;i++){'
-    'const f=state.files[i];'
-    'const t=f.name.replace(/\\.csv$/i,"").replace(/[^a-z0-9]+/gi,"_").toLowerCase();'
-    'st.innerHTML=`<div class="spin-wrap"><div class="spinner"></div>&nbsp;Uploading ${f.name} (${i+1}/${state.files.length})…</div>`;'
-    'try{'
-    'const fd=new FormData();fd.append("table",t);fd.append("file",f);'
-    'const r=await fetch("/api/workflow/upload",{method:"POST",body:fd});'
-    'const j=await r.json();'
-    'if(r.ok){uploadedTables.push(j);}else{'
-    'st.innerHTML=`<span class="err-msg">Failed: ${f.name} — ${j.detail||"error"}</span>`;btn.disabled=false;return;}'
-    '}catch(e){st.innerHTML=`<span class="err-msg">Network error uploading ${f.name}</span>`;btn.disabled=false;return;}}'
-    'st.innerHTML="";'
-    'if(uploadedTables.length===1){state.table=uploadedTables[0].table_name;renderStep2(uploadedTables[0]);}'
-    'else{renderTablePicker();}}'
-    'function renderTablePicker(){'
-    'const el=document.getElementById("table-picker");'
-    'el.style.display="";'
-    'el.innerHTML="<div style=\\"font-size:.8rem;color:#718096;margin-bottom:10px\\">Select a table to build the pipeline for:</div>"+'
-    'uploadedTables.map((t,i)=>'
-    '`<div class="tpick-row">'
-    '<div class="tpick-info"><span class="tpick-name">raw.${t.table_name}</span>'
-    '<span class="tpick-meta">${t.rows} rows &nbsp;·&nbsp; ${t.columns.length} columns</span></div>'
-    '<button class="btn btn-primary btn-sm" onclick="selectTable(${i})">Use for Pipeline &#8594;</button>'
-    '</div>`'
-    ').join("");}'
-    'function selectTable(i){state.table=uploadedTables[i].table_name;renderStep2(uploadedTables[i]);}'
+    'window.addEventListener("message",function(e){'
+    'if(!e.data)return;'
+    'if(e.data.type==="datafabrik_height"){'
+    'const fr=document.getElementById("upload-frame");'
+    'if(fr)fr.style.height=e.data.h+"px";return;}'
+    'if(e.data.type!=="datafabrik_upload")return;'
+    'const j=e.data;'
+    'state.table=j.table_name;state.rows=j.rows;state.columns=j.columns;'
+    'state.s3_bucket=j.s3_bucket;state.s3_key=j.s3_key;'
+    'document.getElementById("s1-continue").style.display="";});'
     'function renderStep2(data){'
     'state.columns=data.columns;'
     'document.getElementById("src-bar").innerHTML='
@@ -2266,7 +2501,7 @@ _WORKFLOW_HTML = (
     '`<tr>'
     '<td><input type="checkbox" class="col-check" checked data-i="${i}"></td>'
     '<td style="color:#718096;font-size:.78rem">${c.name}</td>'
-    '<td><input type="text" class="col-out" value="${c.name}" data-i="${i}"></td>'
+    '<td><input type="text" class="col-out" value="${c.name}" placeholder="output column name" data-i="${i}"></td>'
     '<td><select class="col-type" data-i="${i}">${TYPES.map(t=>`<option${t===c.type?" selected":""}>${t}</option>`).join("")}</select></td>'
     '<td class="col-sample">${c.samples.join(", ")}</td>'
     '</tr>`'
@@ -2278,7 +2513,7 @@ _WORKFLOW_HTML = (
     '["si1","si2","si3","si4"].forEach((id,i)=>{'
     'const el=document.getElementById(id);'
     'if(el)el.className="si"+(i+1<n?" done":i+1===n?" active":"");});'
-    'if(n===1){const b=document.getElementById("s1-btn");if(state.files.length)b.disabled=false;document.getElementById("s1-status").innerHTML="";}'
+    'if(n===1){document.getElementById("s1-continue").style.display="none";const fr=document.getElementById("upload-frame");if(fr)fr.src="/upload?embed=1";}'
     'if(n===3){document.getElementById("s3-btn").disabled=false;document.getElementById("s3-status").innerHTML="";}}'
     'function addFilter(){'
     'const id=++filterSeq;'
@@ -2288,7 +2523,7 @@ _WORKFLOW_HTML = (
     'row.innerHTML='
     '`<select class="filter-col">${cols.map(n=>`<option>${n}</option>`).join("")}</select>'
     '<select class="filter-op" onchange="toggleVal(this)">${OPS.map(([v,l])=>`<option value="${v}">${l}</option>`).join("")}</select>'
-    '<input type="text" class="filter-val" placeholder="value">'
+    '<input type="text" class="filter-val" placeholder="e.g. 100 or active">'
     '<button class="filter-rm" onclick="this.parentElement.remove();syncFilters()">×</button>`;'
     'document.getElementById("filter-list").appendChild(row);'
     'document.getElementById("no-filters").style.display="none";}'
@@ -2315,6 +2550,7 @@ _WORKFLOW_HTML = (
     ').join("");'
     'document.getElementById("metric-list").innerHTML="";'
     'document.getElementById("no-metrics").style.display="";'
+    'document.getElementById("metric-header").style.display="none";'
     'metricSeq=0;}'
     'function addMetric(){'
     'const id=++metricSeq;'
@@ -2325,12 +2561,15 @@ _WORKFLOW_HTML = (
     'row.innerHTML='
     '`<select>${cols.map(c=>`<option>${c}</option>`).join("")}</select>`+'
     '`<select>${FNS.map(f=>`<option>${f}</option>`).join("")}</select>`+'
-    '`<input type="text" placeholder="output name (optional)">`+'
+    '`<input type="text" placeholder="e.g. total_revenue">`+'
     '`<button style="background:none;border:none;color:#4a5568;cursor:pointer;font-size:1.1rem" onclick="this.parentElement.remove();syncMetrics()">&#215;</button>`;'
     'document.getElementById("metric-list").appendChild(row);'
-    'document.getElementById("no-metrics").style.display="none";}'
+    'document.getElementById("no-metrics").style.display="none";'
+    'document.getElementById("metric-header").style.display="";}'
     'function syncMetrics(){'
-    'document.getElementById("no-metrics").style.display=document.querySelectorAll(".metric-row").length?"none":"";}'
+    'const has=document.querySelectorAll(".metric-row").length>0;'
+    'document.getElementById("no-metrics").style.display=has?"none":"";'
+    'document.getElementById("metric-header").style.display=has?"":"none";}'
     'async function doProcess(){'
     'const filters=[];'
     'document.querySelectorAll(".filter-row").forEach(row=>{'
@@ -2346,23 +2585,35 @@ _WORKFLOW_HTML = (
     'const btn=document.getElementById("s3-btn");'
     'const st=document.getElementById("s3-status");'
     'btn.disabled=true;'
-    'st.innerHTML="<div class=\\"spin-wrap\\"><div class=\\"spinner\\"></div>&nbsp;Processing data…</div>";'
+    'st.innerHTML="<div class=\\"spin-wrap\\"><div class=\\"spinner\\"></div>&nbsp;Creating pipeline…</div>";'
     'try{'
     'const r=await fetch("/api/workflow/process",{method:"POST",headers:{"Content-Type":"application/json"},'
-    'body:JSON.stringify({table:state.table,columns:state.cleanCols,filters,group_by:gb,metrics:mx})});'
+    'body:JSON.stringify({table:state.table,s3_bucket:state.s3_bucket,s3_key:state.s3_key,'
+    'columns:state.cleanCols,filters,group_by:gb,metrics:mx})});'
     'const j=await r.json();'
     'if(r.ok){renderResults(j);goStep(4);}'
-    'else{st.innerHTML=`<span class="err-msg">${j.detail||"Processing failed"}</span>`;btn.disabled=false;}'
+    'else{'
+    'const det=j&&j.detail;'
+    'const msg=typeof det==="string"?det:det?JSON.stringify(det):"Processing failed";'
+    'st.innerHTML=\'<span class="err-msg">\'+msg+\'</span>\';btn.disabled=false;}'
     '}catch(e){st.innerHTML="<span class=\\"err-msg\\">Network error</span>";btn.disabled=false;}}'
     'function renderResults(j){'
-    'let summary=`<div>&#10003; Cleaned: <b>analytics."${j.clean_table}"</b> — ${j.clean_rows} rows</div>`;'
-    'if(j.agg_table)summary+=`<div style="margin-top:4px">&#10003; Aggregated: <b>analytics."${j.agg_table}"</b> — ${j.agg_rows} rows</div>`;'
-    'document.getElementById("r-summary").innerHTML=summary;'
-    'const p=j.preview;'
-    'document.getElementById("r-preview").innerHTML='
-    '`<table class="col-tbl"><thead><tr>${p.columns.map(c=>`<th>${c}</th>`).join("")}</tr></thead>`+'
-    '`<tbody>${p.rows.map(r=>`<tr>${r.map(v=>`<td style="color:#a0aec0">${v??""}</td>`).join("")}</tr>`).join("")}</tbody></table>`+'
-    '`<div style="font-size:.72rem;color:#4a5568;margin-top:8px">Showing up to 20 rows · ${j.agg_table?"aggregated":"cleaned"} output</div>`;}'
+    'let html=`<div style="display:flex;flex-direction:column;gap:14px;margin-top:4px">`+'
+    '`<div style="background:#0d1627;border:1px solid #2b4c7e;border-radius:8px;padding:16px">`+'
+    '`<div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#63b3ed;margin-bottom:8px">Cleaning Pipeline</div>`+'
+    '`<div style="font-family:monospace;font-size:.8rem;color:#68d391;margin-bottom:10px">${j.clean_pipeline_id}</div>`+'
+    '`<div style="font-size:.78rem;color:#718096;margin-bottom:10px">Target: <code style="color:#a0aec0">${j.clean_table}</code></div>`+'
+    '`<a class="btn btn-primary btn-sm" href="${j.clean_airflow_url}" target="_blank">View in Airflow &#8599;</a>`+'
+    '`</div>`;'
+    'if(j.agg_pipeline_id){'
+    'html+=`<div style="background:#0d1627;border:1px solid #276749;border-radius:8px;padding:16px">`+'
+    '`<div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#68d391;margin-bottom:8px">Aggregation Pipeline</div>`+'
+    '`<div style="font-family:monospace;font-size:.8rem;color:#68d391;margin-bottom:10px">${j.agg_pipeline_id}</div>`+'
+    '`<div style="font-size:.78rem;color:#718096;margin-bottom:10px">Target: <code style="color:#a0aec0">${j.agg_table}</code></div>`+'
+    '`<a class="btn btn-primary btn-sm" href="${j.agg_airflow_url}" target="_blank">View in Airflow &#8599;</a>`+'
+    '`</div>`;}'
+    'html+=`</div>`;'
+    'document.getElementById("r-pipelines").innerHTML=html;}'
     '</script>'
     '<script>if(location.search.includes("embed=1"))document.querySelectorAll(\'a[href="/"]\').forEach(e=>e.style.display="none");</script>'
     '</body></html>'
@@ -2381,53 +2632,53 @@ _UPLOAD_HTML = (
     '<title>DataFabrik — Upload Data</title>'
     '<style>'
     '*{box-sizing:border-box;margin:0;padding:0}'
-    'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh}'
-    '.topbar{background:#1a1f2e;border-bottom:1px solid #2d3748;padding:14px 32px;display:flex;align-items:center;gap:14px}'
+    'html,body{height:100%;overflow:hidden}'
+    'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0f1117;color:#e2e8f0;display:flex;flex-direction:column}'
+    '.topbar{background:#1a1f2e;border-bottom:1px solid #2d3748;padding:14px 32px;display:flex;align-items:center;gap:14px;flex-shrink:0}'
     '.logo{width:28px;height:28px;background:#3182ce;border-radius:6px;display:flex;align-items:center;justify-content:center}'
     '.logo svg{width:16px;height:16px}'
     '.topbar h1{font-size:1rem;font-weight:700}'
     '.topbar a{margin-left:auto;font-size:.8rem;color:#63b3ed;text-decoration:none}'
     '.topbar a:hover{text-decoration:underline}'
-    '.page{max-width:680px;margin:0 auto;padding:40px 24px}'
-    '.hero{margin-bottom:32px}'
-    '.hero h2{font-size:1.5rem;font-weight:700;margin-bottom:8px}'
-    '.hero p{color:#a0aec0;font-size:.9rem;line-height:1.6}'
+    '.page{flex:1;min-height:0;overflow-y:auto;max-width:680px;margin:0 auto;padding:24px;width:100%}'
+    '.panel-head{margin-bottom:28px}'
+    '.panel-head h2{font-size:1.4rem;font-weight:700;margin-bottom:6px}'
+    '.panel-head p{color:#a0aec0;font-size:.9rem;line-height:1.6}'
     '.card{background:#1a1f2e;border:1px solid #2d3748;border-radius:12px;padding:24px;margin-bottom:20px}'
-    '.card-label{font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#718096;margin-bottom:12px}'
-    '.drop-zone{border:2px dashed #2d3748;border-radius:10px;padding:48px 24px;text-align:center;'
+    '.card-label{font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#718096;margin-bottom:14px;display:flex;align-items:center;gap:10px}'
+    '.drop-zone{border:2px dashed #2d3748;border-radius:10px;padding:40px 24px;text-align:center;'
     'cursor:pointer;transition:border-color .2s,background .2s;position:relative}'
     '.drop-zone:hover,.drop-zone.drag{border-color:#3182ce;background:#0d1627}'
     '.drop-zone.done{border-color:#48bb78;background:#0d1f14;border-style:solid}'
     '.drop-zone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}'
-    '.dz-icon{font-size:2.2rem;margin-bottom:12px;display:block}'
-    '.dz-main{font-size:.95rem;color:#a0aec0;margin-bottom:4px}'
-    '.dz-sub{font-size:.78rem;color:#4a5568}'
+    '.dz-icon{font-size:2rem;margin-bottom:10px;display:block}'
+    '.dz-main{font-size:.9rem;color:#a0aec0;margin-bottom:4px}'
+    '.dz-sub{font-size:.75rem;color:#4a5568}'
     '.dz-name{font-size:1rem;font-weight:600;color:#68d391}'
-    '.field-row{display:flex;align-items:center;gap:12px;margin-top:16px}'
-    '.field-label{font-size:.8rem;color:#718096;white-space:nowrap;min-width:90px}'
+    '.field-row{display:flex;align-items:center;gap:10px;margin-top:14px}'
+    '.field-label{font-size:.8rem;color:#718096;white-space:nowrap;min-width:80px}'
     '.field-prefix{font-size:.85rem;color:#4a5568}'
     'input[type=text]{background:#0d1117;border:1px solid #2d3748;border-radius:6px;'
-    'padding:8px 12px;color:#e2e8f0;font-size:.875rem;outline:none;flex:1;'
-    'transition:border-color .15s}'
+    'padding:8px 12px;color:#e2e8f0;font-size:.875rem;outline:none;flex:1;transition:border-color .15s}'
     'input[type=text]:focus{border-color:#3182ce}'
     '.preview-wrap{overflow-x:auto}'
     '.preview-tbl{width:100%;border-collapse:collapse;font-size:.75rem}'
-    '.preview-tbl th{background:#232a3b;color:#718096;padding:6px 10px;text-align:left;'
-    'border-bottom:1px solid #2d3748;white-space:nowrap}'
+    '.preview-tbl th{background:#232a3b;color:#718096;padding:6px 10px;text-align:left;border-bottom:1px solid #2d3748;white-space:nowrap}'
     '.preview-tbl td{padding:5px 10px;border-bottom:1px solid #1a1f2e;color:#a0aec0;white-space:nowrap}'
     '.preview-tbl tr:last-child td{border-bottom:none}'
     '.row-count{font-size:.75rem;color:#4a5568;margin-top:8px}'
-    '.actions{display:flex;align-items:center;gap:16px}'
-    '.btn{display:inline-flex;align-items:center;gap:6px;padding:11px 28px;border-radius:8px;'
+    '.panel-footer{display:flex;align-items:center;gap:12px;margin-top:8px}'
+    '.btn{display:inline-flex;align-items:center;gap:6px;padding:10px 22px;border-radius:8px;'
     'font-size:.875rem;font-weight:600;cursor:pointer;border:none;transition:opacity .15s,background .15s}'
     '.btn:disabled{opacity:.4;cursor:not-allowed}'
     '.btn-primary{background:#3182ce;color:#fff}.btn-primary:hover:not(:disabled){background:#2b6cb0}'
     '.spin-wrap{display:flex;align-items:center;gap:8px;font-size:.85rem;color:#718096}'
-    '.spinner{width:14px;height:14px;border:2px solid #2d3748;border-top-color:#63b3ed;'
-    'border-radius:50%;animation:spin .6s linear infinite}'
+    '.spinner{width:14px;height:14px;border:2px solid #2d3748;border-top-color:#63b3ed;border-radius:50%;animation:spin .6s linear infinite}'
     '@keyframes spin{to{transform:rotate(360deg)}}'
-    '.result-ok{color:#68d391;font-weight:600;font-size:.9rem}'
-    '.result-err{color:#fc8181;font-size:.9rem}'
+    '.err-msg{color:#fc8181;font-size:.85rem}'
+    '.upload-locs{display:flex;flex-direction:column;gap:8px}'
+    '.upload-loc{font-size:.85rem;color:#68d391;display:flex;align-items:flex-start;gap:8px;line-height:1.5}'
+    '.upload-loc code{font-family:monospace;color:#63b3ed;font-size:.8rem;word-break:break-all}'
     '</style></head><body>'
     '<div class="topbar">'
     '<div class="logo"><svg viewBox="0 0 16 16" fill="none">'
@@ -2435,29 +2686,24 @@ _UPLOAD_HTML = (
     '<path d="M4 8h8M8 4v8" stroke="white" stroke-width="1.8" stroke-linecap="round"/>'
     '</svg></div>'
     '<h1>DataFabrik — Upload Data</h1>'
-    '<a href="/">← Back to Portal</a>'
+    '<a href="/">&#8592; Back to Portal</a>'
     '</div>'
     '<div class="page">'
-    '<div class="hero">'
-    '<h2>Upload a CSV file</h2>'
-    '<p>Drop any CSV — columns are auto-detected from the header row. '
-    'The file is loaded into the <code style="color:#63b3ed;font-size:.85em">raw</code> schema '
-    'and replaces any existing data in that table.</p>'
+    '<div class="panel-head">'
+    '<h2>Upload your data</h2>'
+    '<p>Drop a CSV file — columns and types will be detected automatically. '
+    'The file is loaded into Postgres <code style="color:#63b3ed">raw</code> schema and MinIO raw folder.</p>'
     '</div>'
     '<div class="card">'
     '<div class="card-label">1 &nbsp; Choose your file</div>'
     '<div class="drop-zone" id="dz">'
     '<input type="file" id="fi" accept=".csv" onchange="onFile(this)">'
-    '<div id="dz-idle">'
-    '<span class="dz-icon">📂</span>'
+    '<div id="dz-idle"><span class="dz-icon">&#128194;</span>'
     '<div class="dz-main">Drop a CSV file here, or click to browse</div>'
-    '<div class="dz-sub">.csv files only</div>'
-    '</div>'
-    '<div id="dz-done" style="display:none">'
-    '<span class="dz-icon">✅</span>'
+    '<div class="dz-sub">.csv files only</div></div>'
+    '<div id="dz-done" style="display:none"><span class="dz-icon">&#9989;</span>'
     '<div class="dz-name" id="dz-fname"></div>'
-    '<div class="dz-sub" id="dz-fsize"></div>'
-    '</div>'
+    '<div class="dz-sub" id="dz-fsize"></div></div>'
     '</div>'
     '<div class="field-row">'
     '<span class="field-label">Table name</span>'
@@ -2470,18 +2716,23 @@ _UPLOAD_HTML = (
     '<div class="preview-wrap"><div id="preview-body"></div></div>'
     '<div class="row-count" id="row-count"></div>'
     '</div>'
-    '<div class="actions">'
-    '<button class="btn btn-primary" id="up-btn" onclick="doUpload()" disabled>Load into DataFabrik</button>'
-    '<div id="status"></div>'
+    '<div class="panel-footer" id="up-footer">'
+    '<button class="btn btn-primary" id="up-btn" onclick="doUpload()" disabled>Load into DataFabrik &#8594;</button>'
+    '<div id="up-status"></div>'
+    '</div>'
+    '<div id="upload-success" style="display:none">'
+    '<div class="card" style="background:#0d1f14;border-color:#276749;margin-top:0">'
+    '<div class="upload-locs" id="upload-locs"></div>'
+    '</div>'
     '</div>'
     '</div>'
     '<script>'
-    'let file=null,totalRows=0;'
+    'let file=null;'
     'const dz=document.getElementById("dz");'
     'dz.addEventListener("dragover",e=>{e.preventDefault();dz.classList.add("drag")});'
     'dz.addEventListener("dragleave",()=>dz.classList.remove("drag"));'
     'dz.addEventListener("drop",e=>{e.preventDefault();dz.classList.remove("drag");'
-    'const f=e.dataTransfer.files[0];if(f&&f.name.endsWith(".csv")){applyFile(f);}});'
+    'const f=e.dataTransfer.files[0];if(f&&f.name.toLowerCase().endsWith(".csv"))applyFile(f);});'
     'function onFile(inp){if(inp.files[0])applyFile(inp.files[0]);}'
     'function applyFile(f){'
     'file=f;'
@@ -2493,45 +2744,59 @@ _UPLOAD_HTML = (
     'const stem=f.name.replace(/\\.csv$/i,"").replace(/[^a-z0-9]+/gi,"_").toLowerCase();'
     'const inp=document.getElementById("tbl-input");'
     'if(!inp.value)inp.value=stem;'
-    'preview();checkReady();}'
+    'previewFile();checkReady();}'
     'function checkReady(){'
     'const t=document.getElementById("tbl-input").value.trim();'
     'document.getElementById("up-btn").disabled=!(file&&t);}'
-    'async function preview(){'
+    'async function previewFile(){'
     'const txt=await file.text();'
     'const lines=txt.trim().split("\\n");'
-    'totalRows=lines.length-1;'
-    'const preview=lines.slice(0,6);'
-    'const hdrs=preview[0].split(",");'
+    'const totalRows=lines.length-1;'
+    'const prev=lines.slice(0,6);'
+    'const hdrs=prev[0].split(",");'
     'let h=\'<table class="preview-tbl"><thead><tr>\';'
     'hdrs.forEach(c=>h+=\'<th>\'+c.trim()+\'</th>\');'
     'h+=\'</tr></thead><tbody>\';'
-    'preview.slice(1).forEach(ln=>{'
-    'h+=\'<tr>\';ln.split(",").forEach(v=>h+=\'<td>\'+v.trim()+\'</td>\');h+=\'</tr>\';});'
+    'prev.slice(1).forEach(ln=>{h+=\'<tr>\';ln.split(",").forEach(v=>h+=\'<td>\'+v.trim()+\'</td>\');h+=\'</tr>\';});'
     'h+=\'</tbody></table>\';'
     'document.getElementById("preview-body").innerHTML=h;'
-    'document.getElementById("row-count").textContent=totalRows+" rows total · "+hdrs.length+" columns";'
+    'document.getElementById("row-count").textContent=totalRows+" rows total \xb7 "+hdrs.length+" columns";'
     'document.getElementById("preview-card").style.display="";}'
     'async function doUpload(){'
     'const tbl=document.getElementById("tbl-input").value.trim();'
     'const btn=document.getElementById("up-btn");'
-    'const st=document.getElementById("status");'
+    'const st=document.getElementById("up-status");'
     'btn.disabled=true;'
-    'st.innerHTML=\'<div class="spin-wrap"><div class="spinner"></div>&nbsp;Loading…</div>\';'
+    'st.innerHTML=\'<div class="spin-wrap"><div class="spinner"></div>&nbsp;Uploading to Postgres + MinIO…</div>\';'
     'const fd=new FormData();fd.append("table",tbl);fd.append("file",file);'
     'try{'
-    'const r=await fetch("/api/upload/csv",{method:"POST",body:fd});'
+    'const r=await fetch("/api/workflow/upload",{method:"POST",body:fd});'
     'const j=await r.json();'
     'if(r.ok){'
-    'st.innerHTML=\'<span class="result-ok">✓ \'+j.rows_loaded+\' rows → raw.\'+j.table_name+\'</span>\';'
+    'st.innerHTML="";'
+    'document.getElementById("up-footer").style.display="none";'
+    'document.getElementById("upload-success").style.display="";'
+    'document.getElementById("upload-locs").innerHTML='
+    '\'<div class="upload-loc">&#10003; Postgres: <code>\'+j.postgres_table+\'</code> — \'+j.rows+\' rows loaded</div>\''
+    '+\'<div class="upload-loc">&#10003; MinIO: <code>\'+j.s3_bucket+\'/\'+j.s3_key+\'</code></div>\';'
+    'window.parent.postMessage({type:"datafabrik_upload",table_name:j.table_name,rows:j.rows,'
+    'columns:j.columns,postgres_table:j.postgres_table,s3_bucket:j.s3_bucket,s3_key:j.s3_key},"*");'
     '}else{'
-    'st.innerHTML=\'<span class="result-err">✗ \'+(j.detail||"Upload failed")+\'</span>\';'
+    'st.innerHTML=\'<span class="err-msg">&#10007; \'+(j.detail||"Upload failed")+\'</span>\';'
     'btn.disabled=false;}'
     '}catch(e){'
-    'st.innerHTML=\'<span class="result-err">✗ Network error</span>\';'
+    'st.innerHTML=\'<span class="err-msg">&#10007; Network error</span>\';'
     'btn.disabled=false;}}'
     '</script>'
-    '<script>if(location.search.includes("embed=1"))document.querySelectorAll(\'a[href="/"]\').forEach(e=>e.style.display="none");</script>'
+    '<script>if(location.search.includes("embed=1")){'
+    'document.documentElement.style.height="auto";'
+    'document.body.style.cssText+="height:auto;overflow:visible;";'
+    'document.querySelectorAll(\'.topbar\').forEach(e=>e.style.display="none");'
+    'document.querySelector(\'.page\').style.cssText+="padding:8px 0;overflow:visible;";'
+    'const ro=new ResizeObserver(()=>{'
+    'window.parent.postMessage({type:"datafabrik_height",h:document.body.scrollHeight},"*");});'
+    'ro.observe(document.body);}'
+    '</script>'
     '</body></html>'
 )
 
