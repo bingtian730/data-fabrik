@@ -1799,11 +1799,14 @@ async def api_workflow_upload(table: str = Form(...), file: UploadFile = File(..
     table_name = _safe_name(table)
     if not table_name:
         raise HTTPException(status_code=400, detail="Invalid table name")
+    _SAMPLE_LIMIT = 1000
     content = await file.read()
     reader  = csv.DictReader(io.StringIO(content.decode("utf-8-sig")))
-    rows    = list(reader)
-    if not rows:
+    all_rows = list(reader)
+    if not all_rows:
         raise HTTPException(status_code=400, detail="CSV has no data rows")
+    total_rows = len(all_rows)
+    rows       = all_rows[:_SAMPLE_LIMIT]
     fieldnames = list(reader.fieldnames or [])
     samples: dict[str, list[str]] = {c: [] for c in fieldnames}
     for row in rows[:50]:
@@ -1815,7 +1818,7 @@ async def api_workflow_upload(table: str = Form(...), file: UploadFile = File(..
         {"name": c.strip(), "type": _infer_type(samples[c]), "samples": samples[c]}
         for c in fieldnames
     ]
-    # Step 1: insert into Postgres raw schema
+    # Step 1: insert sampled rows into Postgres raw schema
     safe_cols    = [_safe_name(c) for c in fieldnames]
     col_defs     = ", ".join(f'"{c}" TEXT' for c in safe_cols)
     col_list     = ", ".join(f'"{c}"' for c in safe_cols)
@@ -1830,7 +1833,7 @@ async def api_workflow_upload(table: str = Form(...), file: UploadFile = File(..
         for row in rows:
             data = {_safe_name(k): (v or "").strip() or None for k, v in row.items()}
             conn.execute(text(f'INSERT INTO raw."{table_name}" ({col_list}) VALUES ({placeholders})'), data)
-    # Step 2: upload to MinIO raw folder
+    # Step 2: upload full file to MinIO for reference
     ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     s3_bucket = "datafabrik-raw"
     s3_key    = f"wizard/{table_name}/{table_name}_{ts}.csv"
@@ -1841,12 +1844,14 @@ async def api_workflow_upload(table: str = Form(...), file: UploadFile = File(..
         ContentType="text/csv",
     )
     return {
-        "table_name": table_name,
-        "rows": len(rows),
-        "columns": columns,
+        "table_name":  table_name,
+        "rows":        len(rows),
+        "total_rows":  total_rows,
+        "sampled":     total_rows > _SAMPLE_LIMIT,
+        "columns":     columns,
         "postgres_table": f"raw.{table_name}",
-        "s3_bucket": s3_bucket,
-        "s3_key": s3_key,
+        "s3_bucket":   s3_bucket,
+        "s3_key":      s3_key,
     }
 
 
@@ -2508,7 +2513,8 @@ _UPLOAD_HTML = (
     '<div class="panel-head">'
     '<h2>Upload your data</h2>'
     '<p>Drop a CSV file — columns and types will be detected automatically. '
-    'The file is loaded into Postgres <code style="color:#63b3ed">raw</code> schema and MinIO raw folder.</p>'
+    'Up to <strong>1,000 rows</strong> are sampled into Postgres <code style="color:#63b3ed">raw</code> schema. '
+    'The full file is stored in MinIO for reference.</p>'
     '</div>'
     '<div class="card">'
     '<div class="card-label">1 &nbsp; Choose your file</div>'
@@ -2592,9 +2598,10 @@ _UPLOAD_HTML = (
     'st.innerHTML="";'
     'document.getElementById("up-footer").style.display="none";'
     'document.getElementById("upload-success").style.display="";'
+    'const sampledNote=j.sampled?` (sampled ${j.rows.toLocaleString()} of ${j.total_rows.toLocaleString()})`:` — ${j.rows.toLocaleString()} rows`;'
     'document.getElementById("upload-locs").innerHTML='
-    '\'<div class="upload-loc">&#10003; Postgres: <code>\'+j.postgres_table+\'</code> — \'+j.rows+\' rows loaded</div>\''
-    '+\'<div class="upload-loc">&#10003; MinIO: <code>\'+j.s3_bucket+\'/\'+j.s3_key+\'</code></div>\';'
+    '\'<div class="upload-loc">&#10003; Postgres: <code>\'+j.postgres_table+\'</code>\'+sampledNote+\'</div>\''
+    '+\'<div class="upload-loc">&#10003; MinIO: <code>\'+j.s3_bucket+\'/\'+j.s3_key+\'</code> (full file)</div>\';'
     'window.parent.postMessage({type:"datafabrik_upload",table_name:j.table_name,rows:j.rows,'
     'columns:j.columns,postgres_table:j.postgres_table,s3_bucket:j.s3_bucket,s3_key:j.s3_key},"*");'
     '}else{'
