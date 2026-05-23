@@ -44,6 +44,10 @@ def build_dags_from_directory(directory: str | Path) -> dict[str, DAG]:
         return dags
 
     for path in sorted([*directory.glob("*.yaml"), *directory.glob("*.yml")]):
-        dag = build_dag_from_yaml(path)
-        dags[dag.dag_id] = dag
+        try:
+            dag = build_dag_from_yaml(path)
+            dags[dag.dag_id] = dag
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).error("Skipping %s — %s: %s", path.name, type(exc).__name__, exc)
     return dags

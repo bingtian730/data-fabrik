@@ -26,7 +26,7 @@ class PipelineStages(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    ingestion: SourceConfig
+    ingestion: SourceConfig | None = None
     transformation: TransformationConfig | None = None
     validation: list[ValidationRuleConfig] = Field(default_factory=list)
     delivery: DestinationConfig | None = None
