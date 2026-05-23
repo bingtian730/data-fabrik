@@ -2426,7 +2426,7 @@ _WORKFLOW_HTML = (
     'const html=`<div style="background:#0d1627;border:1px solid #2b4c7e;border-radius:8px;padding:16px;margin-top:4px">`+'
     '`<div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#63b3ed;margin-bottom:8px">Pipeline</div>`+'
     '`<div style="font-family:monospace;font-size:.8rem;color:#68d391;margin-bottom:6px">${j.pipeline_id}</div>`+'
-    '${views}+'
+    'views+'
     '`<div style="margin-top:12px"><a class="btn btn-primary btn-sm" href="${j.airflow_url}" target="_blank">View in Airflow &#8599;</a></div>`+'
     '`</div>`;'
     'document.getElementById("r-pipelines").innerHTML=html;}'
