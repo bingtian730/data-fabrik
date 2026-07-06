@@ -198,6 +198,39 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+@app.patch("/api/pipelines/{dag_id}/pause")
+def api_toggle_pause(dag_id: str, paused: bool) -> dict:
+    """Pause or unpause an Airflow DAG."""
+    resp = _requests.patch(
+        f"{AIRFLOW_URL}/api/v1/dags/{dag_id}",
+        auth=(AIRFLOW_USER, AIRFLOW_PASS),
+        json={"is_paused": paused},
+        timeout=10,
+    )
+    if not resp.ok:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    return {"dag_id": dag_id, "is_paused": paused}
+
+
+@app.delete("/api/pipelines/{dag_id}/dag")
+def api_delete_dag(dag_id: str) -> dict:
+    """Delete a DAG from Airflow and remove any local config files if they exist."""
+    resp = _requests.delete(
+        f"{AIRFLOW_URL}/api/v1/dags/{dag_id}",
+        auth=(AIRFLOW_USER, AIRFLOW_PASS),
+        timeout=10,
+    )
+    deleted_files = []
+    for ext in (".yaml", ".sql"):
+        p = _CONFIGS_DIR / f"{dag_id}{ext}"
+        if p.exists():
+            p.unlink()
+            deleted_files.append(p.name)
+    if not resp.ok and resp.status_code != 404:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    return {"dag_id": dag_id, "deleted_files": deleted_files}
+
+
 @app.post("/api/pipelines/{dag_id}/trigger")
 def api_trigger_pipeline(dag_id: str) -> dict:
     """Unpause then trigger an Airflow DAG run, retrying while DagBag loads."""
@@ -950,17 +983,28 @@ function renderPipelines(pipes) {
          <div class="pct-bar"><div class="pct-fill pct-${tier}" style="width:${pct}%"></div></div>
          <span class="dim">${p.ok_30d}/${p.runs_30d}</span>`
       : '<span class="dim">no data</span>';
-    return `<tr>
+    const isPaused = p.state === 'paused';
+    const isRunning = p.state === 'running';
+    return `<tr id="pipe-row-${p.id}">
       <td><strong>${p.id}</strong></td>
       <td>${badge(p.state)}</td>
       <td class="dim">${p.last_run}</td>
       <td class="dim">${p.duration}</td>
       <td>${pctHtml}</td>
       <td class="dim">${p.rows}</td>
-      <td>
+      <td style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-trigger btn-sm" onclick="triggerPipeline('${p.id}', this)"
-          ${p.state==='running'?'disabled':''}>
+          ${isRunning ? 'disabled' : ''} title="Trigger a manual run">
           ▶ Run
+        </button>
+        <button class="btn btn-sm ${isPaused ? 'btn-success' : 'btn-ghost'}"
+          onclick="togglePause('${p.id}', ${isPaused}, this)"
+          title="${isPaused ? 'Resume scheduled runs' : 'Pause scheduled runs'}">
+          ${isPaused ? '▶ Resume' : '⏸ Pause'}
+        </button>
+        <button class="btn btn-danger btn-sm" onclick="deleteDag('${p.id}', this)"
+          title="Delete DAG from Airflow">
+          🗑
         </button>
       </td>
     </tr>`;
@@ -970,7 +1014,7 @@ function renderPipelines(pipes) {
     <table>
       <thead><tr>
         <th>Pipeline</th><th>State</th><th>Last Run</th>
-        <th>Duration</th><th>30-day Success</th><th>Rows</th><th>Action</th>
+        <th>Duration</th><th>30-day Success</th><th>Rows</th><th>Actions</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
@@ -987,6 +1031,39 @@ async function triggerPipeline(dagId, btn) {
     toast('Failed to trigger ' + dagId + ': ' + e.message, 'err');
     btn.disabled = false;
     btn.textContent = '▶ Run';
+  }
+}
+
+async function togglePause(dagId, currentlyPaused, btn) {
+  const willPause = !currentlyPaused;
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    await fetch('/api/pipelines/' + encodeURIComponent(dagId) + '/pause?paused=' + willPause, {method:'PATCH'});
+    toast(dagId + (willPause ? ' paused' : ' resumed'));
+    setTimeout(() => loadPipelines(), 800);
+  } catch(e) {
+    toast('Failed: ' + e.message, 'err');
+    btn.disabled = false;
+    btn.textContent = currentlyPaused ? '▶ Resume' : '⏸ Pause';
+  }
+}
+
+async function deleteDag(dagId, btn) {
+  if (!confirm('Delete DAG "' + dagId + '" from Airflow?\n\nThis also removes any local config files for this pipeline.')) return;
+  btn.disabled = true;
+  btn.textContent = '…';
+  const row = document.getElementById('pipe-row-' + dagId);
+  if (row) row.style.opacity = '0.4';
+  try {
+    await fetch('/api/pipelines/' + encodeURIComponent(dagId) + '/dag', {method:'DELETE'});
+    toast('Deleted ' + dagId);
+    setTimeout(() => loadPipelines(), 800);
+  } catch(e) {
+    toast('Failed to delete ' + dagId + ': ' + e.message, 'err');
+    btn.disabled = false;
+    btn.textContent = '🗑';
+    if (row) row.style.opacity = '1';
   }
 }
 
