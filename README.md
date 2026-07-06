@@ -17,6 +17,8 @@ A local data platform that runs entirely in Docker. Upload a CSV, build a cleani
 - [Docker Desktop](https://www.docker.com/products/docker-desktop) 4.30+ (Mac or Windows with WSL2, or Linux with Docker Engine 24+)
 - ~6 GB free RAM
 
+> **No other installs needed.** Postgres, Airflow, MinIO, and Metabase all run as Docker containers — nothing is installed on your machine outside of Docker.
+
 ## Download & run
 
 **Option A — one-liner (Mac / Linux)**
