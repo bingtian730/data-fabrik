@@ -513,6 +513,24 @@ select.form-control{cursor:pointer}
 .cred-tool{font-size:.78rem;font-weight:600;color:#a0aec0;margin-bottom:8px}
 .cred-row{font-size:.75rem;color:#718096;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:3px}
 .cred-val{color:#e2e8f0;font-family:monospace;font-size:.78rem}
+/* ── Pipeline guide diagram ── */
+.guide-wrap{display:flex;align-items:center;justify-content:center;flex:1;padding:40px 32px}
+.guide-flow{display:flex;align-items:flex-start;gap:0}
+.guide-node{background:#1a1f2e;border:1px solid #2d3748;border-radius:12px;padding:20px 16px;width:160px;flex-shrink:0;position:relative}
+.guide-node-num{position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:#0f1117;border:1px solid #2d3748;border-radius:20px;padding:1px 10px;font-size:.65rem;font-weight:700;color:#4a5568;white-space:nowrap}
+.guide-node-icon{font-size:2rem;text-align:center;margin:6px 0 10px}
+.guide-node-title{font-size:.85rem;font-weight:700;text-align:center;margin-bottom:6px}
+.guide-node-desc{font-size:.72rem;color:#718096;text-align:center;line-height:1.5}
+.guide-node-tags{display:flex;flex-wrap:wrap;justify-content:center;gap:4px;margin-top:8px}
+.guide-tag{background:#1e2535;border:1px solid #2d3748;border-radius:4px;padding:2px 7px;font-size:.63rem;color:#4a5568;font-family:monospace}
+.guide-node.n1{border-color:#2b4c7e}.guide-node.n1 .guide-node-title{color:#90cdf4}
+.guide-node.n2{border-color:#276749}.guide-node.n2 .guide-node-title{color:#68d391}
+.guide-node.n3{border-color:#744210}.guide-node.n3 .guide-node-title{color:#f6ad55}
+.guide-node.n4{border-color:#553c9a}.guide-node.n4 .guide-node-title{color:#b794f4}
+.guide-arrow{display:flex;flex-direction:column;align-items:center;justify-content:center;width:48px;flex-shrink:0;padding-top:54px}
+.guide-arrow-line{width:100%;height:2px;background:linear-gradient(90deg,#2d3748,#4a5568)}
+.guide-arrow-head{width:0;height:0;border-top:5px solid transparent;border-bottom:5px solid transparent;border-left:7px solid #4a5568;margin-left:-1px}
+.guide-arrow-label{font-size:.6rem;color:#4a5568;margin-top:6px;white-space:nowrap;text-align:center}
 </style>
 </head>
 <body>
@@ -546,20 +564,15 @@ select.form-control{cursor:pointer}
       <span class="icon">🗄️</span> MinIO
     </button>
     <div class="sb-section">Build</div>
-    <button class="nav-btn" onclick="nav('builder')" id="nav-builder">
-      <span class="icon">🔧</span> Pipeline Builder
-    </button>
-    <button class="nav-btn" onclick="nav('onboard')" id="nav-onboard">
-      <span class="icon">🚀</span> Onboard Customer
-    </button>
-    <button class="nav-btn" onclick="nav('upload')" id="nav-upload">
-      <span class="icon">📤</span> Upload Data
-    </button>
     <button class="nav-btn" onclick="nav('workflow')" id="nav-workflow">
       <span class="icon">🧹</span> Workflow Wizard
     </button>
     <button class="nav-btn" onclick="nav('manage')" id="nav-manage">
-      <span class="icon">🗑️</span> Manage Pipelines
+      <span class="icon">⚙️</span> Manage Pipelines
+    </button>
+    <div class="sb-section">Learn</div>
+    <button class="nav-btn" onclick="nav('guide')" id="nav-guide">
+      <span class="icon">🗺️</span> Pipeline Guide
     </button>
   </div>
   <div class="sb-footer">Local Development</div>
@@ -599,7 +612,6 @@ select.form-control{cursor:pointer}
         <a class="qlink" href="http://localhost:3000" target="_blank"><span class="ql-icon">📊</span> Metabase ↗</a>
         <a class="qlink" href="http://localhost:9001" target="_blank"><span class="ql-icon">🗄️</span> MinIO ↗</a>
         <a class="qlink" href="/dashboard" target="_blank"><span class="ql-icon">🖥️</span> Health Dashboard ↗</a>
-        <a class="qlink" href="#" onclick="nav('onboard');return false"><span class="ql-icon">🚀</span> Onboard Customer</a>
       </div>
       <h3 style="font-size:.85rem;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px">Recent Runs</h3>
       <div id="home-runs"><div class="loading"><span class="spinner"></span> Loading…</div></div>
@@ -651,176 +663,6 @@ select.form-control{cursor:pointer}
     </div>
   </div>
 
-  <!-- BUILDER -->
-  <div id="sec-builder" class="section">
-    <div class="sec-header">
-      <h2>🔧 Pipeline Builder</h2>
-    </div>
-    <div class="sec-body">
-      <!-- Form -->
-      <div id="builder-form-wrap">
-        <div class="form-section">
-          <h3>① Pipeline Info</h3>
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">Pipeline Name *</label>
-              <input id="b-name" class="form-control" placeholder="e.g. acme_orders" type="text">
-            </div>
-            <div class="form-group">
-              <label class="form-label">Owner</label>
-              <input id="b-owner" class="form-control" value="data-platform" type="text">
-            </div>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Description</label>
-            <input id="b-desc" class="form-control" placeholder="What does this pipeline do?" type="text">
-          </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">Schedule</label>
-              <select id="b-schedule" class="form-control">
-                <option value="@daily">@daily — once a day</option>
-                <option value="@hourly">@hourly — once an hour</option>
-                <option value="@weekly">@weekly — once a week</option>
-                <option value="@monthly">@monthly — once a month</option>
-                <option value="@once">@once — manual trigger only</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label class="form-label">Tags (comma-separated)</label>
-              <input id="b-tags" class="form-control" placeholder="e.g. finance, postgres" type="text">
-            </div>
-          </div>
-        </div>
-
-        <div class="form-section">
-          <h3>② Data Source</h3>
-          <div class="form-group">
-            <label class="form-label">Source Type *</label>
-            <select id="b-src-type" class="form-control" onchange="updateSourceFields()">
-              <option value="jdbc">JDBC — database table/query</option>
-              <option value="http_api">HTTP API — REST endpoint</option>
-              <option value="s3_csv">S3 CSV — files in a bucket</option>
-            </select>
-          </div>
-          <!-- JDBC fields -->
-          <div id="src-jdbc">
-            <div class="form-row">
-              <div class="form-group">
-                <label class="form-label">Airflow Connection ID *</label>
-                <input id="b-conn" class="form-control" placeholder="e.g. acme_postgres" type="text">
-              </div>
-              <div class="form-group">
-                <label class="form-label">Source Table * (schema.table)</label>
-                <input id="b-table" class="form-control" placeholder="e.g. public.orders" type="text">
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-group">
-                <label class="form-label">Watermark Column</label>
-                <input id="b-watermark" class="form-control" placeholder="updated_at" type="text" value="updated_at">
-              </div>
-              <div class="form-group">
-                <label class="form-label">Destination Prefix (S3)</label>
-                <input id="b-dest-prefix" class="form-control" placeholder="auto-generated from pipeline name" type="text">
-              </div>
-            </div>
-          </div>
-          <!-- HTTP API fields -->
-          <div id="src-http" style="display:none">
-            <div class="form-row">
-              <div class="form-group">
-                <label class="form-label">URL *</label>
-                <input id="b-url" class="form-control" placeholder="https://api.example.com/v1/data" type="text">
-              </div>
-              <div class="form-group">
-                <label class="form-label">Method</label>
-                <select id="b-method" class="form-control">
-                  <option>GET</option>
-                  <option>POST</option>
-                </select>
-              </div>
-            </div>
-            <div class="form-group">
-              <label class="form-label">Destination Key (S3)</label>
-              <input id="b-dest-key-http" class="form-control" placeholder="e.g. weather/{{ ds_nodash }}.json" type="text">
-            </div>
-          </div>
-          <!-- S3 CSV fields -->
-          <div id="src-s3" style="display:none">
-            <div class="form-row">
-              <div class="form-group">
-                <label class="form-label">Source Bucket *</label>
-                <input id="b-src-bucket" class="form-control" placeholder="e.g. vendor-data" type="text">
-              </div>
-              <div class="form-group">
-                <label class="form-label">Source Key Pattern *</label>
-                <input id="b-src-key" class="form-control" placeholder="e.g. daily/*.csv" type="text">
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="form-section">
-          <h3>③ Transformation</h3>
-          <div class="form-group">
-            <label class="form-label">Transform Type</label>
-            <select id="b-transform" class="form-control">
-              <option value="none">None — skip transformation</option>
-            </select>
-          </div>
-        </div>
-
-        <div style="display:flex;gap:12px;align-items:center">
-          <button class="btn btn-primary" onclick="generatePipeline()" id="gen-btn">
-            ⚙️ Generate Pipeline Config
-          </button>
-          <span id="gen-status" style="font-size:.8rem;color:#718096"></span>
-        </div>
-      </div>
-
-      <!-- Results -->
-      <div id="builder-results" style="display:none;margin-top:24px">
-        <div class="result-section">
-          <h3>Validation</h3>
-          <div id="val-status"></div>
-        </div>
-        <div class="result-section">
-          <h3>Pipeline YAML</h3>
-          <p class="dim" style="margin-bottom:10px">Save this as <code style="background:#2d3748;padding:2px 6px;border-radius:4px">orchestration/airflow/dags/&lt;pipeline_id&gt;.yaml</code></p>
-          <div class="code-block">
-            <div class="code-block-header">
-              <span>pipeline.yaml</span>
-              <button class="btn btn-ghost btn-sm" onclick="copyCode('yaml-out')">Copy</button>
-            </div>
-            <pre id="yaml-out"></pre>
-          </div>
-        </div>
-        <button class="btn btn-ghost" onclick="resetBuilder()" style="margin-top:8px">← New Pipeline</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ONBOARD CUSTOMER -->
-  <div id="sec-onboard" class="section iframe-section">
-    <div class="iframe-bar">
-      <span>🚀 Onboard Customer — register a new data pipeline</span>
-    </div>
-    <div class="iframe-wrap">
-      <iframe id="frame-onboard" title="Onboard Customer" allowfullscreen></iframe>
-    </div>
-  </div>
-
-  <!-- UPLOAD DATA -->
-  <div id="sec-upload" class="section iframe-section">
-    <div class="iframe-bar">
-      <span>📤 Upload Data — load a CSV into Postgres</span>
-    </div>
-    <div class="iframe-wrap">
-      <iframe id="frame-upload" title="Upload Data" allowfullscreen></iframe>
-    </div>
-  </div>
-
   <!-- PIPELINE WIZARD -->
   <div id="sec-workflow" class="section iframe-section">
     <div class="iframe-bar">
@@ -841,15 +683,93 @@ select.form-control{cursor:pointer}
     </div>
   </div>
 
+  <!-- PIPELINE GUIDE -->
+  <div id="sec-guide" class="section">
+    <div class="sec-header">
+      <h2>🗺️ Pipeline Guide</h2>
+      <span class="sub">How local CSV data flows through the platform</span>
+    </div>
+    <div class="guide-wrap">
+      <div class="guide-flow">
+
+        <!-- Step 1: CSV Upload -->
+        <div class="guide-node n1">
+          <div class="guide-node-num">Step 1</div>
+          <div class="guide-node-icon">📄</div>
+          <div class="guide-node-title">Upload CSV</div>
+          <div class="guide-node-desc">Drop a local CSV file in the Workflow Wizard to start a new pipeline</div>
+          <div class="guide-node-tags">
+            <span class="guide-tag">Workflow Wizard</span>
+            <span class="guide-tag">local file</span>
+          </div>
+        </div>
+
+        <div class="guide-arrow">
+          <div class="guide-arrow-line"></div>
+          <div class="guide-arrow-head"></div>
+          <div class="guide-arrow-label">staged as raw</div>
+        </div>
+
+        <!-- Step 2: MinIO -->
+        <div class="guide-node n2">
+          <div class="guide-node-num">Step 2</div>
+          <div class="guide-node-icon">🗄️</div>
+          <div class="guide-node-title">MinIO Storage</div>
+          <div class="guide-node-desc">CSV is written to the <code style="font-size:.65rem;background:#1e2535;padding:1px 4px;border-radius:3px">datafabrik-raw</code> bucket under <code style="font-size:.65rem;background:#1e2535;padding:1px 4px;border-radius:3px">wizard/</code></div>
+          <div class="guide-node-tags">
+            <span class="guide-tag">object store</span>
+            <span class="guide-tag">:9001</span>
+          </div>
+        </div>
+
+        <div class="guide-arrow">
+          <div class="guide-arrow-line"></div>
+          <div class="guide-arrow-head"></div>
+          <div class="guide-arrow-label">triggers DAG</div>
+        </div>
+
+        <!-- Step 3: Airflow -->
+        <div class="guide-node n3">
+          <div class="guide-node-num">Step 3</div>
+          <div class="guide-node-icon">✈️</div>
+          <div class="guide-node-title">Airflow Pipeline</div>
+          <div class="guide-node-desc">A DAG is generated and triggered. It reads raw data and runs the SQL transformation</div>
+          <div class="guide-node-tags">
+            <span class="guide-tag">DAG run</span>
+            <span class="guide-tag">:8082</span>
+          </div>
+        </div>
+
+        <div class="guide-arrow">
+          <div class="guide-arrow-line"></div>
+          <div class="guide-arrow-head"></div>
+          <div class="guide-arrow-label">writes views</div>
+        </div>
+
+        <!-- Step 4: Postgres -->
+        <div class="guide-node n4">
+          <div class="guide-node-num">Step 4</div>
+          <div class="guide-node-icon">🐘</div>
+          <div class="guide-node-title">Postgres</div>
+          <div class="guide-node-desc">Cleaned data lands in <code style="font-size:.65rem;background:#1e2535;padding:1px 4px;border-radius:3px">clean.</code> schema; aggregations in <code style="font-size:.65rem;background:#1e2535;padding:1px 4px;border-radius:3px">analytics.</code></div>
+          <div class="guide-node-tags">
+            <span class="guide-tag">clean schema</span>
+            <span class="guide-tag">analytics schema</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
 </main>
 </div>
 
 <script>
 // ── Navigation ──────────────────────────────────────────────────────────
-const SECTIONS = ['home','pipelines','airflow','metabase','minio','builder','onboard','upload','workflow','manage'];
+const SECTIONS = ['home','pipelines','airflow','metabase','minio','workflow','manage','guide'];
 const IFRAMES  = {airflow:'/tools/airflow', metabase:'http://localhost:3001', minio:'http://localhost:9002',
-                  onboard:'/onboard?embed=1', upload:'/upload?embed=1', workflow:'/workflow?embed=1',
-                  manage:'/manage?embed=1'};
+                  workflow:'/workflow?embed=1', manage:'/manage?embed=1'};
 // Airflow is proxied via nginx on :8082 which strips X-Frame-Options
 const iframeLoaded = {};
 
@@ -1079,132 +999,6 @@ function badge(state) {
   };
   const [cls, label] = map[state] || ['none', state];
   return `<span class="badge ${cls}">${label}</span>`;
-}
-
-// ── Builder ─────────────────────────────────────────────────────────────
-function updateSourceFields() {
-  const t = document.getElementById('b-src-type').value;
-  document.getElementById('src-jdbc').style.display = t==='jdbc' ? '' : 'none';
-  document.getElementById('src-http').style.display = t==='http_api' ? '' : 'none';
-  document.getElementById('src-s3').style.display   = t==='s3_csv' ? '' : 'none';
-}
-
-async function generatePipeline() {
-  const name = document.getElementById('b-name').value.trim();
-  if (!name) { toast('Pipeline name is required', 'err'); return; }
-
-  const srcType = document.getElementById('b-src-type').value;
-  const schedule = document.getElementById('b-schedule').value;
-  const owner = document.getElementById('b-owner').value.trim() || 'data-platform';
-  const tags = document.getElementById('b-tags').value.split(',').map(t=>t.trim()).filter(Boolean);
-  const transform = document.getElementById('b-transform').value;
-
-  const pipelineId = name.toLowerCase().replace(/[^a-z0-9]+/g,'_');
-
-  let ingestion;
-  if (srcType === 'jdbc') {
-    const connId    = document.getElementById('b-conn').value.trim();
-    const table     = document.getElementById('b-table').value.trim();
-    const watermark = document.getElementById('b-watermark').value.trim() || 'updated_at';
-    const destPfx   = document.getElementById('b-dest-prefix').value.trim() || null;
-    if (!connId || !table) { toast('Connection ID and table are required for JDBC', 'err'); return; }
-    ingestion = {type:'jdbc', connection_id:connId, table, watermark_column:watermark,
-                 ...(destPfx && {dest_prefix:destPfx})};
-  } else if (srcType === 'http_api') {
-    const url = document.getElementById('b-url').value.trim();
-    const method = document.getElementById('b-method').value;
-    const destKey = document.getElementById('b-dest-key-http').value.trim() || `${pipelineId}/{{ ds_nodash }}.json`;
-    if (!url) { toast('URL is required for HTTP API', 'err'); return; }
-    ingestion = {type:'http_api', url, method, dest_key:destKey};
-  } else {
-    const srcBucket = document.getElementById('b-src-bucket').value.trim();
-    const srcKey    = document.getElementById('b-src-key').value.trim();
-    if (!srcBucket || !srcKey) { toast('Source bucket and key pattern are required for S3', 'err'); return; }
-    ingestion = {type:'s3_csv', source_bucket:srcBucket, source_key:srcKey};
-  }
-
-  // Build stages
-  const stages = {ingestion};
-
-  // Build schedule
-  let scheduleConfig;
-  if (schedule.startsWith('@')) {
-    scheduleConfig = {preset: schedule, start_date: new Date().toISOString().slice(0,10) + 'T00:00:00'};
-  } else {
-    scheduleConfig = {cron: schedule, start_date: new Date().toISOString().slice(0,10) + 'T00:00:00'};
-  }
-
-  const config = {pipeline_id: pipelineId, description: document.getElementById('b-desc').value.trim() || null,
-    owner, tags, schedule: scheduleConfig, stages};
-
-  // Render results
-  renderBuilderResults({
-    pipeline_yaml: jsYaml(config),
-    validation_passed: true,
-    validation_error: null
-  });
-}
-
-function jsYaml(obj, indent=0) {
-  // Minimal YAML serializer for our config object
-  const pad = '  '.repeat(indent);
-  const lines = [];
-  for (const [k, v] of Object.entries(obj)) {
-    if (v === null || v === undefined) continue;
-    if (typeof v === 'string') {
-      const needsQuotes = v.includes(':') || v.includes('#') || v.includes('{') || v === '';
-      lines.push(`${pad}${k}: ${needsQuotes ? JSON.stringify(v) : v}`);
-    } else if (typeof v === 'boolean' || typeof v === 'number') {
-      lines.push(`${pad}${k}: ${v}`);
-    } else if (Array.isArray(v)) {
-      if (v.length === 0) continue;
-      if (v.every(i => typeof i === 'string')) {
-        lines.push(`${pad}${k}: [${v.join(', ')}]`);
-      } else {
-        lines.push(`${pad}${k}:`);
-        v.forEach(item => {
-          if (typeof item === 'object') {
-            const entries = Object.entries(item);
-            lines.push(`${pad}  - ${entries[0][0]}: ${entries[0][1]}`);
-            entries.slice(1).forEach(([ik,iv]) => lines.push(`${pad}    ${ik}: ${iv}`));
-          } else {
-            lines.push(`${pad}  - ${item}`);
-          }
-        });
-      }
-    } else if (typeof v === 'object') {
-      lines.push(`${pad}${k}:`);
-      lines.push(jsYaml(v, indent+1));
-    }
-  }
-  return lines.join('\\n');
-}
-
-function renderBuilderResults(result) {
-  document.getElementById('builder-form-wrap').style.display = 'none';
-  document.getElementById('builder-results').style.display = '';
-
-  // Validation
-  const valEl = document.getElementById('val-status');
-  valEl.innerHTML = result.validation_passed
-    ? '<div class="val-ok">✓ Config looks valid</div>'
-    : `<div class="val-err">✗ ${result.validation_error}</div>`;
-
-  // YAML
-  document.getElementById('yaml-out').textContent = result.pipeline_yaml;
-}
-
-function resetBuilder() {
-  document.getElementById('builder-form-wrap').style.display = '';
-  document.getElementById('builder-results').style.display = 'none';
-}
-
-function copyCode(id) {
-  copyText(document.getElementById(id).textContent);
-}
-
-function copyText(text) {
-  navigator.clipboard.writeText(text).then(() => toast('Copied to clipboard'));
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────
@@ -1669,6 +1463,10 @@ def _safe_name(s: str) -> str:
 
 _VALID_TYPES = {"TEXT", "INTEGER", "NUMERIC", "DATE", "TIMESTAMP", "BOOLEAN"}
 _VALID_OPS   = {"=", "!=", ">", ">=", "<", "<=", "LIKE", "IS NULL", "IS NOT NULL"}
+_DANGEROUS_SQL = re.compile(
+    r"\b(DROP|DELETE|INSERT|UPDATE|TRUNCATE|CREATE|ALTER|GRANT|REVOKE|EXEC(?:UTE)?|CALL|COPY|pg_sleep|pg_read_file)\b",
+    re.IGNORECASE,
+)
 
 
 def _infer_type(values: list[str]) -> str:
@@ -1688,22 +1486,31 @@ def _infer_type(values: list[str]) -> str:
     return "TEXT"
 
 
-def _generate_clean_sql(table: str, columns: list, filters: list) -> str:
+def _generate_clean_sql(table: str, columns: list, filters: list, joins: list = [], computed_cols: list = []) -> str:
+    _VALID_JOIN_TYPES = {"INNER", "LEFT", "RIGHT"}
+    valid_joins = [
+        j for j in joins
+        if j.get("table") and j.get("left_col") and j.get("right_col")
+        and j.get("join_type", "LEFT").upper() in _VALID_JOIN_TYPES
+    ]
+    has_joins = bool(valid_joins)
+
     select_parts = []
     for col in columns:
         if not col.get("include", True):
             continue
-        src  = col["name"]
-        out  = col.get("output_name") or src
+        src   = col["name"]
+        out   = col.get("output_name") or src
         dtype = col.get("type", "TEXT")
         if dtype not in _VALID_TYPES:
             dtype = "TEXT"
+        tq = f'"{table}".' if has_joins else ""
         if dtype == "TEXT":
-            expr = f'trim("{src}")'
+            expr = f'trim({tq}"{src}")'
         elif dtype == "NUMERIC":
-            expr = f'round("{src}"::NUMERIC, 2)'
+            expr = f'round({tq}"{src}"::NUMERIC, 2)'
         else:
-            expr = f'"{src}"::{dtype}'
+            expr = f'{tq}"{src}"::{dtype}'
         select_parts.append(f'        {expr} AS "{out}"')
 
     where_parts = []
@@ -1720,11 +1527,35 @@ def _generate_clean_sql(table: str, columns: list, filters: list) -> str:
         else:
             where_parts.append(f'"{col}" {op} \'{val}\'')
 
+    for cc in computed_cols:
+        name = _safe_name(cc.get("name", "") or "")
+        expr = (cc.get("expression", "") or "").strip()
+        if name and expr and not _DANGEROUS_SQL.search(expr):
+            select_parts.append(f'        {expr} AS "{name}"')
+
     select_str = ",\n".join(select_parts) or "        *"
     where_str  = ""
     if where_parts:
         where_str = "    WHERE " + "\n      AND ".join(where_parts) + "\n"
 
+    if has_joins:
+        join_lines = ""
+        for j in valid_joins:
+            jt     = j["join_type"].upper()
+            jtable = j["table"]
+            lcol   = j["left_col"]
+            rcol   = j["right_col"]
+            join_lines += f'    {jt} JOIN raw."{jtable}" ON "{table}"."{lcol}" = "{jtable}"."{rcol}"\n'
+        return (
+            f'with cleaned as (\n'
+            f'    select\n'
+            f'{select_str}\n'
+            f'    from raw."{table}"\n'
+            f'{join_lines}'
+            f'{where_str}'
+            f')\n'
+            f'select * from cleaned\n'
+        )
     return (
         f'with source as (\n'
         f'    select * from raw."{table}"\n'
@@ -1756,6 +1587,18 @@ class _AggMetric(BaseModel):
     column: str
     fn: str
     output_name: str = ""
+
+
+class _JoinConfig(BaseModel):
+    table: str
+    join_type: str = "LEFT"
+    left_col: str
+    right_col: str
+
+
+class _ComputedCol(BaseModel):
+    name: str
+    expression: str
 
 
 def _generate_agg_sql(clean_model: str, group_by: list[str], metrics: list[dict]) -> str:
@@ -1792,6 +1635,32 @@ def _generate_agg_sql(clean_model: str, group_by: list[str], metrics: list[dict]
         f')\n'
         f'select * from aggregated\n'
     )
+
+
+@app.get("/api/workflow/tables")
+def api_workflow_tables() -> dict:
+    """List BASE TABLEs in raw schema with their column names (excluding metadata columns)."""
+    try:
+        with engine.begin() as conn:
+            result = conn.execute(text(
+                "SELECT c.table_name, c.column_name "
+                "FROM information_schema.columns c "
+                "JOIN information_schema.tables t "
+                "  ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
+                "WHERE c.table_schema = 'raw' "
+                "  AND t.table_type = 'BASE TABLE' "
+                "  AND c.column_name != 'uploaded_at' "
+                "ORDER BY c.table_name, c.ordinal_position"
+            ))
+            tables: dict[str, list[str]] = {}
+            for row in result:
+                tname, cname = row[0], row[1]
+                if tname not in tables:
+                    tables[tname] = []
+                tables[tname].append(cname)
+    except Exception:
+        tables = {}
+    return {"tables": tables}
 
 
 @app.post("/api/workflow/upload")
@@ -1859,48 +1728,71 @@ async def api_workflow_upload(table: str = Form(...), file: UploadFile = File(..
     }
 
 
-class _ProcessPayload(BaseModel):
+class _TableProcessConfig(BaseModel):
     table: str
     columns: list[_ColConfig]
     filters: list[_FilterConfig] = []
+    joins: list[_JoinConfig] = []
+    computed_cols: list[_ComputedCol] = []
     group_by: list[str] = []
     metrics: list[_AggMetric] = []
 
 
+class _ProcessPayload(BaseModel):
+    tables: list[_TableProcessConfig]
+
+
 @app.post("/api/workflow/process")
 def api_process(payload: _ProcessPayload) -> dict:
-    """Generate a single pipeline that creates clean + optional analytics views."""
-    table = _safe_name(payload.table)
-    if not table:
-        raise HTTPException(status_code=400, detail="Invalid table name")
+    """Generate one pipeline with clean (+ optional analytics) views for all tables."""
+    if not payload.tables:
+        raise HTTPException(status_code=400, detail="No tables provided")
 
-    ts      = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    cols    = [c.model_dump() for c in payload.columns]
-    filters = [f.model_dump() for f in payload.filters]
-    pid     = f"wiz_{table}_{ts}"
+    ts    = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    first = _safe_name(payload.tables[0].table)
+    pid   = f"wiz_{'multi' if len(payload.tables) > 1 else first}_{ts}"
 
-    clean_sql = _generate_clean_sql(table, cols, filters)
-    sql_body = (
-        f'CREATE SCHEMA IF NOT EXISTS clean;\n'
-        f'CREATE OR REPLACE VIEW clean."{table}" AS\n{clean_sql};\n'
-    )
+    sql_parts: list[str] = ["CREATE SCHEMA IF NOT EXISTS clean;"]
+    if any(t.metrics for t in payload.tables):
+        sql_parts.append("CREATE SCHEMA IF NOT EXISTS analytics;")
 
-    agg_view = None
-    if payload.metrics:
-        agg_sql = _generate_agg_sql(table, payload.group_by,
-                                    [m.model_dump() for m in payload.metrics])
-        sql_body += (
-            f'CREATE SCHEMA IF NOT EXISTS analytics;\n'
-            f'CREATE OR REPLACE VIEW analytics."{table}" AS\n{agg_sql};\n'
+    result_views: list[dict] = []
+    for tbl_cfg in payload.tables:
+        table = _safe_name(tbl_cfg.table)
+        if not table:
+            continue
+        clean_sql = _generate_clean_sql(
+            table,
+            [c.model_dump() for c in tbl_cfg.columns],
+            [f.model_dump() for f in tbl_cfg.filters],
+            [j.model_dump() for j in tbl_cfg.joins],
+            [cc.model_dump() for cc in tbl_cfg.computed_cols],
         )
-        agg_view = f'analytics."{table}"'
+        sql_parts.append(f'CREATE OR REPLACE VIEW clean."{table}" AS\n{clean_sql};')
+
+        agg_view = None
+        if tbl_cfg.metrics:
+            agg_sql = _generate_agg_sql(
+                table, tbl_cfg.group_by, [m.model_dump() for m in tbl_cfg.metrics]
+            )
+            sql_parts.append(
+                f'CREATE OR REPLACE VIEW analytics."{table}" AS\n{agg_sql};'
+            )
+            agg_view = f'analytics."{table}"'
+
+        result_views.append(
+            {"table": table, "clean_view": f'clean."{table}"', "agg_view": agg_view}
+        )
+
+    table_names = ", ".join(_safe_name(t.table) for t in payload.tables)
+    tags        = ["generated", "wizard"] + [_safe_name(t.table) for t in payload.tables]
 
     _CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
-    (_CONFIGS_DIR / f"{pid}.sql").write_text(sql_body)
+    (_CONFIGS_DIR / f"{pid}.sql").write_text("\n".join(sql_parts) + "\n")
     (_CONFIGS_DIR / f"{pid}.yaml").write_text(
         f"pipeline_id: {pid}\n"
-        f"description: Wizard pipeline for {table}\n"
-        f"tags: [generated, wizard, {table}]\n\n"
+        f"description: Wizard pipeline for {table_names}\n"
+        f"tags: [{', '.join(tags)}]\n\n"
         f"schedule:\n  preset: \"@once\"\n  retries: 1\n\n"
         f"stages:\n"
         f"  transformation:\n"
@@ -1911,8 +1803,7 @@ def api_process(payload: _ProcessPayload) -> dict:
 
     return {
         "pipeline_id": pid,
-        "clean_view": f'clean."{table}"',
-        "agg_view": agg_view,
+        "views":       result_views,
         "airflow_url": f"http://localhost:8082/dags/{pid}/grid",
     }
 
@@ -2098,7 +1989,7 @@ _WORKFLOW_HTML = (
     '.logo svg{width:16px;height:16px}'
     '.topbar h1{font-size:1rem;font-weight:700}'
     '.topbar a{margin-left:auto;font-size:.8rem;color:#63b3ed;text-decoration:none}'
-    '.page{flex:1;min-height:0;overflow-y:auto;max-width:820px;margin:0 auto;padding:20px 24px;width:100%}'
+    '.page{flex:1;min-height:0;overflow-y:auto;max-width:900px;margin:0 auto;padding:20px 24px;width:100%}'
     '.stepper{display:flex;align-items:center;margin-bottom:20px}'
     '.si{display:flex;align-items:center;gap:8px;font-size:.8rem;color:#4a5568}'
     '.si.active{color:#63b3ed;font-weight:600}'
@@ -2108,11 +1999,10 @@ _WORKFLOW_HTML = (
     '.si.done .si-circle{background:#276749;color:#9ae6b4}'
     '.si-sep{flex:1;height:1px;background:#2d3748;margin:0 12px}'
     '.panel{display:none}.panel.active{display:block}'
-    '.panel-head{margin-bottom:28px}'
+    '.panel-head{margin-bottom:20px}'
     '.panel-head h2{font-size:1.4rem;font-weight:700;margin-bottom:6px}'
     '.panel-head p{color:#a0aec0;font-size:.9rem;line-height:1.6}'
-    '.card{background:#1a1f2e;border:1px solid #2d3748;border-radius:12px;padding:24px;margin-bottom:20px}'
-    '.card-label{font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#718096;margin-bottom:14px;display:flex;align-items:center;gap:10px}'
+    '.card{background:#1a1f2e;border:1px solid #2d3748;border-radius:12px;padding:20px 24px;margin-bottom:14px}'
     '.drop-zone{border:2px dashed #2d3748;border-radius:10px;padding:40px 24px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;position:relative}'
     '.drop-zone:hover,.drop-zone.drag{border-color:#3182ce;background:#0d1627}'
     '.drop-zone.done{border-color:#48bb78;background:#0d1f14;border-style:solid}'
@@ -2120,15 +2010,6 @@ _WORKFLOW_HTML = (
     '.dz-icon{font-size:2rem;margin-bottom:10px;display:block}'
     '.dz-main{font-size:.9rem;color:#a0aec0;margin-bottom:4px}'
     '.dz-sub{font-size:.75rem;color:#4a5568}'
-    '.dz-name{font-size:1rem;font-weight:600;color:#68d391}'
-    '.field-row{display:flex;align-items:center;gap:10px;margin-top:14px}'
-    '.field-label{font-size:.8rem;color:#718096;white-space:nowrap;min-width:80px}'
-    '.field-prefix{font-size:.85rem;color:#4a5568}'
-    'input[type=text]{background:#0d1117;border:1px solid #2d3748;border-radius:6px;padding:8px 12px;color:#e2e8f0;font-size:.875rem;outline:none;flex:1;transition:border-color .15s}'
-    'input[type=text]:focus{border-color:#3182ce}'
-    '.source-bar{background:#151a27;border-radius:8px;padding:10px 16px;font-size:.82rem;color:#718096;margin-bottom:20px}'
-    '.source-bar b{color:#e2e8f0}'
-    '.section-title{font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#718096;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between}'
     '.col-wrap{overflow-x:auto}'
     '.col-tbl{width:100%;border-collapse:collapse;font-size:.8rem}'
     '.col-tbl th{background:#232a3b;color:#4a5568;padding:7px 10px;text-align:left;border-bottom:1px solid #2d3748;white-space:nowrap;font-weight:600}'
@@ -2138,68 +2019,70 @@ _WORKFLOW_HTML = (
     '.col-out{width:130px;background:#0d1117;border:1px solid #2d3748;border-radius:5px;padding:4px 8px;color:#e2e8f0;font-size:.78rem}'
     '.col-out:focus{border-color:#3182ce;outline:none}'
     'select.col-type{background:#0d1117;border:1px solid #2d3748;border-radius:5px;padding:4px 8px;color:#e2e8f0;font-size:.78rem;cursor:pointer}'
-    '.col-sample{color:#4a5568;font-size:.72rem;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
-    '.filter-list{display:flex;flex-direction:column;gap:8px}'
-    '.filter-row{display:flex;align-items:center;gap:8px}'
-    'select.filter-col,select.filter-op{background:#0d1117;border:1px solid #2d3748;border-radius:6px;padding:7px 10px;color:#e2e8f0;font-size:.8rem;cursor:pointer}'
-    'select.filter-col{min-width:130px}'
-    'select.filter-op{min-width:110px}'
-    '.filter-val{background:#0d1117;border:1px solid #2d3748;border-radius:6px;padding:7px 10px;color:#e2e8f0;font-size:.8rem;flex:1}'
+    '.col-sample{color:#4a5568;font-size:.72rem;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+    '.filter-list,.join-list{display:flex;flex-direction:column;gap:8px}'
+    '.filter-row,.join-row,.expr-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}'
+    'select.filter-col,select.filter-op,select.join-type,select.join-tbl,select.join-lcol,select.join-rcol'
+    '{background:#0d1117;border:1px solid #2d3748;border-radius:6px;padding:6px 9px;color:#e2e8f0;font-size:.8rem;cursor:pointer}'
+    'select.filter-col,select.join-lcol,select.join-rcol{min-width:110px}'
+    'select.join-tbl{min-width:120px}'
+    'select.filter-op,select.join-type{min-width:88px}'
+    '.filter-val{background:#0d1117;border:1px solid #2d3748;border-radius:6px;padding:6px 9px;color:#e2e8f0;font-size:.8rem;flex:1;min-width:70px}'
     '.filter-val:focus{border-color:#3182ce;outline:none}'
-    '.filter-rm{background:none;border:none;color:#4a5568;cursor:pointer;font-size:1.1rem;padding:0 4px;line-height:1}'
+    '.join-eq{color:#4a5568;font-size:.85rem;padding:0 2px;flex-shrink:0}'
+    '.filter-rm{background:none;border:none;color:#4a5568;cursor:pointer;font-size:1.1rem;padding:0 4px;line-height:1;flex-shrink:0}'
     '.filter-rm:hover{color:#fc8181}'
-    '.no-filters{font-size:.8rem;color:#4a5568;padding:10px 0}'
+    '.no-msg{font-size:.78rem;color:#4a5568;padding:6px 0}'
+    'input.expr-name{width:130px;background:#0d1117;border:1px solid #2d3748;border-radius:5px;padding:6px 9px;color:#e2e8f0;font-size:.8rem;outline:none}'
+    'input.expr-name:focus{border-color:#3182ce}'
+    'input.expr-val{background:#0d1117;border:1px solid #2d3748;border-radius:5px;padding:6px 9px;color:#68d391;font-size:.8rem;font-family:monospace;flex:1;min-width:150px;outline:none}'
+    'input.expr-val:focus{border-color:#3182ce}'
+    '.expr-eq{color:#4a5568;font-size:.85rem;padding:0 4px;flex-shrink:0}'
+    'input[type=text]{background:#0d1117;border:1px solid #2d3748;border-radius:6px;padding:8px 12px;color:#e2e8f0;font-size:.875rem;outline:none;flex:1;transition:border-color .15s}'
+    'input[type=text]:focus{border-color:#3182ce}'
     '.btn-link{background:none;border:none;color:#63b3ed;cursor:pointer;font-size:.78rem;padding:0}'
     '.btn-link:hover{text-decoration:underline}'
-    '.panel-footer{display:flex;align-items:center;gap:12px;margin-top:8px}'
+    '.btn-link:disabled{color:#4a5568;cursor:not-allowed}'
+    '.panel-footer{display:flex;align-items:center;gap:12px;margin-top:14px}'
     '.btn{display:inline-flex;align-items:center;gap:6px;padding:10px 22px;border-radius:8px;font-size:.875rem;font-weight:600;cursor:pointer;border:none;transition:opacity .15s,background .15s;text-decoration:none}'
     '.btn:disabled{opacity:.4;cursor:not-allowed}'
     '.btn-primary{background:#3182ce;color:#fff}.btn-primary:hover:not(:disabled){background:#2b6cb0}'
     '.btn-ghost{background:#2d3748;color:#e2e8f0}.btn-ghost:hover{background:#3a4459}'
+    '.btn-sm{padding:6px 14px!important;font-size:.8rem!important}'
     '.spin-wrap{display:flex;align-items:center;gap:8px;font-size:.85rem;color:#718096}'
     '.spinner{width:14px;height:14px;border:2px solid #2d3748;border-top-color:#63b3ed;border-radius:50%;animation:spin .6s linear infinite}'
     '@keyframes spin{to{transform:rotate(360deg)}}'
     '.err-msg{color:#fc8181;font-size:.85rem}'
-    '.success-block{text-align:center;padding:32px 0 24px}'
-    '.success-block .s-icon{font-size:3rem;margin-bottom:16px;display:block}'
+    '.success-block{text-align:center;padding:28px 0 20px}'
+    '.success-block .s-icon{font-size:3rem;margin-bottom:14px;display:block}'
     '.success-block h2{font-size:1.4rem;font-weight:700;margin-bottom:8px}'
-    '.success-block .pid{font-family:monospace;font-size:.85rem;color:#63b3ed;background:#0d1627;'
-    'padding:6px 14px;border-radius:6px;display:inline-block;margin-bottom:20px}'
-    '.sql-block{background:#0d1117;border:1px solid #2d3748;border-radius:8px;padding:16px;'
-    'font-family:"JetBrains Mono","Fira Code",monospace;font-size:.75rem;color:#a0aec0;'
-    'white-space:pre;overflow-x:auto;line-height:1.6;max-height:300px;overflow-y:auto}'
-    '.chk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}'
+    '.chk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}'
     '.chk-item{display:flex;align-items:center;gap:8px;background:#0d1117;border:1px solid #2d3748;'
     'border-radius:6px;padding:8px 12px;font-size:.8rem;cursor:pointer;transition:border-color .2s}'
-    '.chk-item:hover{border-color:#4a5568}.chk-item.sel{border-color:#3182ce;background:rgba(49,130,206,.08)}'
+    '.chk-item:hover{border-color:#4a5568}'
     '.chk-item input{width:14px;height:14px;cursor:pointer;accent-color:#3182ce}'
     '.metric-row{display:grid;grid-template-columns:1fr 90px 1fr 28px;gap:8px;align-items:center;margin-bottom:8px}'
     '.metric-row select,.metric-row input[type=text]{background:#0d1117;border:1px solid #2d3748;'
     'border-radius:5px;padding:6px 9px;color:#e2e8f0;font-size:.79rem;outline:none}'
     '.metric-row select:focus,.metric-row input[type=text]:focus{border-color:#3182ce}'
-    'input[type=date]{background:#0d1117;border:1px solid #2d3748;border-radius:6px;'
-    'padding:7px 10px;color:#e2e8f0;font-size:.8rem;outline:none}'
-    'input[type=date]:focus{border-color:#3182ce}'
-    '.date-row{display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:12px;align-items:end}'
-    '.date-label{font-size:.78rem;color:#718096;margin-bottom:5px}'
-    '.dz-file-item{display:flex;align-items:center;gap:8px;font-size:.82rem;color:#e2e8f0;padding:3px 0}'
-    '.dz-fsize{color:#4a5568;font-size:.75rem}'
-    '.table-picker{margin-top:16px}'
-    '.tpick-row{display:flex;align-items:center;justify-content:space-between;background:#0d1117;'
-    'border:1px solid #2d3748;border-radius:8px;padding:12px 16px;margin-bottom:8px;gap:12px}'
-    '.tpick-info{display:flex;flex-direction:column;gap:3px;min-width:0}'
-    '.tpick-name{font-size:.9rem;font-weight:600;font-family:monospace;color:#63b3ed}'
-    '.tpick-meta{font-size:.75rem;color:#4a5568}'
-    '.btn-sm{padding:6px 14px!important;font-size:.8rem!important}'
-    '.preview-wrap{overflow-x:auto}'
-    '.preview-tbl{width:100%;border-collapse:collapse;font-size:.75rem}'
-    '.preview-tbl th{background:#232a3b;color:#718096;padding:6px 10px;text-align:left;border-bottom:1px solid #2d3748;white-space:nowrap}'
-    '.preview-tbl td{padding:5px 10px;border-bottom:1px solid #1a1f2e;color:#a0aec0;white-space:nowrap}'
-    '.preview-tbl tr:last-child td{border-bottom:none}'
-    '.row-count{font-size:.75rem;color:#4a5568;margin-top:8px}'
-    '.upload-locs{display:flex;flex-direction:column;gap:8px}'
-    '.upload-loc{font-size:.85rem;color:#68d391;display:flex;align-items:flex-start;gap:8px;line-height:1.5}'
-    '.upload-loc code{font-family:monospace;color:#63b3ed;font-size:.8rem;word-break:break-all}'
+    '.agg-toggle{display:flex;align-items:center;gap:10px;margin-bottom:12px;cursor:pointer;font-size:.88rem;color:#e2e8f0}'
+    '.agg-toggle input[type=checkbox]{width:16px;height:16px;accent-color:#3182ce;cursor:pointer}'
+    '.sub-label{font-size:.73rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#718096;margin:12px 0 6px}'
+    '.ts-card{background:#1a1f2e;border:1px solid #2d3748;border-radius:12px;margin-bottom:12px;overflow:hidden}'
+    '.ts-head{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;cursor:pointer;'
+    'border-bottom:1px solid #2d3748;transition:background .15s}'
+    '.ts-head:hover{background:#232a3b}'
+    '.ts-head-info{display:flex;align-items:center;gap:14px}'
+    '.ts-name{font-size:.9rem;font-weight:700;color:#63b3ed;font-family:monospace}'
+    '.ts-meta{font-size:.72rem;color:#4a5568}'
+    '.ts-chev{font-size:.8rem;color:#718096;flex-shrink:0}'
+    '.ts-body{padding:20px}'
+    '.ts-section{margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid #151a27}'
+    '.ts-section:last-child{margin-bottom:0;padding-bottom:0;border-bottom:none}'
+    '.ts-stitle{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#718096;'
+    'margin-bottom:8px;display:flex;align-items:center}'
+    '.pb-summary{background:#151a27;border-radius:8px;padding:10px 16px;font-size:.82rem;color:#718096;margin-bottom:14px}'
+    '.pb-summary b{color:#e2e8f0}'
     '</style></head><body>'
     '<div class="topbar">'
     '<div class="logo"><svg viewBox="0 0 16 16" fill="none">'
@@ -2207,243 +2090,338 @@ _WORKFLOW_HTML = (
     '<path d="M4 8h8M8 4v8" stroke="white" stroke-width="1.8" stroke-linecap="round"/>'
     '</svg></div>'
     '<h1>DataFabrik — Workflow Wizard</h1>'
-    '<a href="/">← Back to Portal</a>'
+    '<a href="/">&#8592; Back to Portal</a>'
     '</div>'
     '<div class="page">'
     '<div class="stepper">'
     '<div class="si active" id="si1"><div class="si-circle">1</div>Upload CSV</div>'
     '<div class="si-sep"></div>'
-    '<div class="si" id="si2"><div class="si-circle">2</div>Configure Cleaning</div>'
+    '<div class="si" id="si2"><div class="si-circle">2</div>Pipeline Builder</div>'
     '<div class="si-sep"></div>'
-    '<div class="si" id="si3"><div class="si-circle">3</div>Configure Aggregation</div>'
-    '<div class="si-sep"></div>'
-    '<div class="si" id="si4"><div class="si-circle">4</div>Results</div>'
+    '<div class="si" id="si3"><div class="si-circle">3</div>Results</div>'
     '</div>'
     '<div id="p1" class="panel active">'
     '<iframe id="upload-frame" src="/upload?embed=1"'
-    ' style="width:100%;border:none;border-radius:8px;height:360px;display:block;transition:height .15s"></iframe>'
-    '<div id="s1-continue" style="display:none">'
-    '<div class="panel-footer">'
-    '<button class="btn btn-primary"'
-    ' onclick="renderStep2({table_name:state.table,rows:state.rows,columns:state.columns})">Continue to Cleaning &#8594;</button>'
-    '</div>'
-    '</div>'
+    ' style="width:100%;border:none;border-radius:8px;height:380px;display:block;transition:height .15s"></iframe>'
+    '<div id="s1-continue" style="display:none"><div class="panel-footer">'
+    '<button class="btn btn-primary" id="s1-btn"'
+    ' onclick="enterPipelineBuilder(state.uploadedTables)">Continue to Pipeline Builder &#8594;</button>'
+    '<span id="s1-hint" style="font-size:.78rem;color:#718096"></span>'
+    '</div></div>'
     '</div>'
     '<div id="p2" class="panel">'
-    '<div class="panel-head"><h2>Configure cleaning</h2>'
-    '<p>Uncheck columns to drop them, rename output names, cast types, and add WHERE filters.</p></div>'
-    '<div class="source-bar" id="src-bar"></div>'
-    '<div class="card">'
-    '<div class="section-title">Columns'
-    '<span style="font-size:.72rem;color:#4a5568;font-weight:400;text-transform:none;letter-spacing:0;margin-left:8px">'
-    'Uncheck to exclude &nbsp;·&nbsp; Edit output name &nbsp;·&nbsp; Change cast type</span>'
-    '</div>'
-    '<div class="col-wrap"><table class="col-tbl">'
-    '<thead><tr>'
-    '<th title="Include in output">Keep</th><th>Source column</th>'
-    '<th>Output name <span style="font-weight:400;color:#4a5568;font-size:.68rem">(rename)</span></th>'
-    '<th>Cast type</th><th>Sample values</th>'
-    '</tr></thead>'
-    '<tbody id="col-tbody"></tbody>'
-    '</table></div>'
-    '</div>'
-    '<div class="card">'
-    '<div class="section-title">Row filters '
-    '<button class="btn-link" onclick="addFilter()">+ Add filter</button>'
-    '</div>'
-    '<div style="font-size:.75rem;color:#4a5568;margin-bottom:10px">Only rows matching ALL filters will be included in the output.</div>'
-    '<div class="filter-list" id="filter-list"></div>'
-    '<div class="no-filters" id="no-filters">No filters — all rows will be included</div>'
-    '</div>'
+    '<div class="panel-head"><h2>Pipeline Builder</h2>'
+    '<p>Configure each uploaded table — columns, filters, expressions, joins, and aggregation. All tables are processed together in one pipeline.</p></div>'
+    '<div class="pb-summary" id="pb-summary"></div>'
+    '<div id="tables-container"></div>'
     '<div class="panel-footer">'
     '<button class="btn btn-ghost" onclick="goStep(1)">&#8592; Back</button>'
-    '<button class="btn btn-primary" onclick="renderStep3();goStep(3)" id="s2-next">Next: Configure Aggregation &#8594;</button>'
+    '<button class="btn btn-primary" id="s2-btn" onclick="doProcess()">Process &amp; Load &#8594;</button>'
+    '<div id="s2-status"></div>'
     '</div>'
     '</div>'
     '<div id="p3" class="panel">'
-    '<div class="panel-head"><h2>Configure Aggregation</h2>'
-    '<p>Optional — group your cleaned data and compute metrics. Leave empty to load the cleaned table as-is.</p></div>'
     '<div class="card">'
-    '<div class="section-title">Group By</div>'
-    '<div style="font-size:.75rem;color:#4a5568;margin-bottom:12px">Select the columns to group rows by (like SQL GROUP BY). Required if you add any metrics.</div>'
-    '<div class="chk-grid" id="gb-grid"></div>'
-    '</div>'
-    '<div class="card">'
-    '<div class="section-title">Metrics '
-    '<button class="btn-link" onclick="addMetric()">+ Add metric</button>'
-    '</div>'
-    '<div style="font-size:.75rem;color:#4a5568;margin-bottom:10px">Each metric applies an aggregate function to a column — e.g. SUM(revenue), COUNT(*), AVG(score).</div>'
-    '<div style="display:none;grid-template-columns:1fr 90px 1fr 28px;gap:8px;margin-bottom:6px;padding:0 2px" id="metric-header">'
-    '<span style="font-size:.7rem;color:#4a5568">Column</span>'
-    '<span style="font-size:.7rem;color:#4a5568">Function</span>'
-    '<span style="font-size:.7rem;color:#4a5568">Output name <span style="font-weight:400">(optional)</span></span>'
-    '<span></span></div>'
-    '<div id="metric-list"></div>'
-    '<div id="no-metrics" style="font-size:.8rem;color:#4a5568;padding:6px 0">No metrics — cleaning output will be loaded as-is</div>'
-    '</div>'
-    '<div class="panel-footer">'
-    '<button class="btn btn-ghost" onclick="goStep(2)">&#8592; Back</button>'
-    '<button class="btn btn-primary" id="s3-btn" onclick="doProcess()">Process &amp; Load &#8594;</button>'
-    '<div id="s3-status"></div>'
-    '</div>'
-    '</div>'
-    '<div id="p4" class="panel">'
-    '<div class="card">'
-    '<div class="success-block">'
-    '<span class="s-icon">&#9989;</span>'
-    '<h2>Pipelines Triggered!</h2>'
-    '</div>'
+    '<div class="success-block"><span class="s-icon">&#9989;</span><h2>Pipeline Triggered!</h2></div>'
     '<div id="r-pipelines"></div>'
     '</div>'
     '<div class="card" style="font-size:.82rem;color:#718096;line-height:1.8">'
     '<div style="font-weight:700;color:#e2e8f0;margin-bottom:10px">What happens next</div>'
-    '<div>&#9312; Airflow creates a <code style="color:#63b3ed">clean.*</code> view reading from <code style="color:#63b3ed">raw.*</code></div>'
-    '<div>&#9313; If you added aggregations, an <code style="color:#63b3ed">analytics.*</code> view is created reading from the clean view</div>'
+    '<div>&#9312; Airflow creates a <code style="color:#63b3ed">clean.*</code> view for each table from <code style="color:#63b3ed">raw.*</code></div>'
+    '<div>&#9313; If you enabled aggregation, <code style="color:#63b3ed">analytics.*</code> views are also created</div>'
     '<div style="margin-top:8px">&#9314; Open Metabase and connect to the <code style="color:#63b3ed">datafabrik</code> database to query the views</div>'
     '</div>'
     '<div style="text-align:center;margin-top:16px">'
     '<a class="btn btn-primary" href="http://localhost:3001" target="_blank">Open Metabase &#8599;</a>'
     '</div>'
     '<div class="panel-footer" style="justify-content:center;gap:12px;padding-top:16px;border-top:1px solid #2d3748;margin-top:16px">'
-    '<button class="btn btn-ghost" onclick="goStep(3)">&#8592; Back</button>'
-    '<button class="btn btn-primary" onclick="goStep(1);state={table:\'\',rows:0,columns:[]};document.getElementById(\'r-pipelines\').innerHTML=\'\'">&#10003; Complete</button>'
+    '<button class="btn btn-ghost" onclick="goStep(2)">&#8592; Back</button>'
+    '<button class="btn btn-primary" onclick="resetWizard()">&#10003; Complete</button>'
+    '</div>'
     '</div>'
     '</div>'
     '</div>'
     '<script>'
     'const TYPES=["TEXT","INTEGER","NUMERIC","DATE","TIMESTAMP","BOOLEAN"];'
-    'const OPS=[["=","equals"],["!=","not equals"],[">=","≥"],["<=","≤"],["LIKE","contains"],["IS NULL","is empty"],["IS NOT NULL","is not empty"]];'
-    'let state={table:"",rows:0,columns:[]};'
-    'let filterSeq=0;'
+    'const OPS=[["=","equals"],["!=","not equals"],[">=",">="],["<=","<="],["LIKE","contains"],["IS NULL","is empty"],["IS NOT NULL","not empty"]];'
+    'const JOIN_TYPES=["LEFT","INNER","RIGHT"];'
+    'const FNS=["SUM","COUNT","AVG","MIN","MAX"];'
+    'let state={uploadedTables:[],rawTables:{}};'
+    'let seqs={};'
+    'function nextSeq(i,t){if(!seqs[i])seqs[i]={};if(!seqs[i][t])seqs[i][t]=0;return++seqs[i][t];}'
     'window.addEventListener("message",function(e){'
     'if(!e.data)return;'
-    'if(e.data.type==="datafabrik_height"){'
-    'const fr=document.getElementById("upload-frame");'
-    'if(fr)fr.style.height=e.data.h+"px";return;}'
+    'if(e.data.type==="datafabrik_height"){const fr=document.getElementById("upload-frame");if(fr)fr.style.height=e.data.h+"px";return;}'
     'if(e.data.type!=="datafabrik_upload")return;'
-    'const j=e.data;'
-    'state.table=j.table_name;state.rows=j.rows;state.columns=j.columns;'
+    'const tables=e.data.tables||[{table_name:e.data.table_name,rows:e.data.rows,columns:e.data.columns}];'
+    'state.uploadedTables=tables;'
+    'const hint=document.getElementById("s1-hint");'
+    'if(hint)hint.textContent=tables.length>1?tables.length+" tables ready":"1 table ready";'
     'document.getElementById("s1-continue").style.display="";});'
-    'function renderStep2(data){'
-    'state.columns=data.columns;'
-    'document.getElementById("src-bar").innerHTML='
-    '`<b>raw.${state.table}</b> &nbsp;·&nbsp; ${data.rows} rows &nbsp;·&nbsp; ${data.columns.length} columns`;'
-    'const tbody=document.getElementById("col-tbody");'
-    'tbody.innerHTML=data.columns.map((c,i)=>'
-    '`<tr>'
-    '<td><input type="checkbox" class="col-check" checked data-i="${i}"></td>'
-    '<td style="color:#718096;font-size:.78rem">${c.name}</td>'
-    '<td><input type="text" class="col-out" value="${c.name}" placeholder="output column name" data-i="${i}"></td>'
-    '<td><select class="col-type" data-i="${i}">${TYPES.map(t=>`<option${t===c.type?" selected":""}>${t}</option>`).join("")}</select></td>'
-    '<td class="col-sample">${c.samples.join(", ")}</td>'
-    '</tr>`'
-    ').join("");'
+    'async function enterPipelineBuilder(tables){'
+    'try{'
+    'const resp=await fetch("/api/workflow/tables");'
+    'const jt=await resp.json();'
+    'state.rawTables=jt.tables||{};'
+    '}catch(_){state.rawTables={};}'
+    'seqs={};'
+    'document.getElementById("tables-container").innerHTML="";'
+    'tables.forEach((t,i)=>buildTableSection(i,t,i===0));'
+    'const n=tables.length;'
+    'document.getElementById("pb-summary").innerHTML='
+    '`<b>${n} table${n>1?"s":""} loaded</b> &nbsp;\xb7&nbsp; ${tables.map(t=>`<code style="color:#63b3ed">raw.${t.table_name}</code>`).join(" , ")}`;'
     'goStep(2);}'
     'function goStep(n){'
     'document.querySelectorAll(".panel").forEach(p=>p.classList.remove("active"));'
     'document.getElementById(`p${n}`).classList.add("active");'
-    '["si1","si2","si3","si4"].forEach((id,i)=>{'
+    '["si1","si2","si3"].forEach((id,i)=>{'
     'const el=document.getElementById(id);'
     'if(el)el.className="si"+(i+1<n?" done":i+1===n?" active":"");});'
     'if(n===1){document.getElementById("s1-continue").style.display="none";const fr=document.getElementById("upload-frame");if(fr)fr.src="/upload?embed=1";}'
-    'if(n===3){document.getElementById("s3-btn").disabled=false;document.getElementById("s3-status").innerHTML="";}}'
-    'function addFilter(){'
-    'const id=++filterSeq;'
-    'const cols=state.columns.map(c=>c.name);'
-    'const row=document.createElement("div");'
-    'row.className="filter-row";row.id=`fr${id}`;'
-    'row.innerHTML='
-    '`<select class="filter-col">${cols.map(n=>`<option>${n}</option>`).join("")}</select>'
-    '<select class="filter-op" onchange="toggleVal(this)">${OPS.map(([v,l])=>`<option value="${v}">${l}</option>`).join("")}</select>'
-    '<input type="text" class="filter-val" placeholder="e.g. 100 or active">'
-    '<button class="filter-rm" onclick="this.parentElement.remove();syncFilters()">×</button>`;'
-    'document.getElementById("filter-list").appendChild(row);'
-    'document.getElementById("no-filters").style.display="none";}'
-    'function toggleVal(sel){'
-    'const val=sel.parentElement.querySelector(".filter-val");'
-    'val.style.display=["IS NULL","IS NOT NULL"].includes(sel.value)?"none":"";}'
-    'function syncFilters(){'
-    'const rows=document.querySelectorAll(".filter-row");'
-    'document.getElementById("no-filters").style.display=rows.length?"none":"";}'
-    'const FNS=["SUM","COUNT","AVG","MIN","MAX"];'
-    'let metricSeq=0;'
-    'function renderStep3(){'
-    'const cols=[];'
-    'document.querySelectorAll("#col-tbody tr").forEach((tr,i)=>{'
-    'cols.push({name:state.columns[i].name,'
-    'output_name:tr.querySelector(".col-out").value.trim(),'
-    'type:tr.querySelector(".col-type").value,'
-    'include:tr.querySelector(".col-check").checked});});'
-    'state.cleanCols=cols;'
-    'const included=cols.filter(c=>c.include);'
-    'const gb=document.getElementById("gb-grid");'
-    'gb.innerHTML=included.map(c=>'
-    '`<label class="chk-item"><input type="checkbox" data-col="${c.output_name||c.name}">&nbsp;${c.output_name||c.name}</label>`'
+    'if(n===2){document.getElementById("s2-btn").disabled=false;document.getElementById("s2-status").innerHTML="";}}'
+    'function buildTableSection(idx,t,expanded){'
+    'const cols=t.columns||[];'
+    'const colRows=cols.map((c,ci)=>'
+    '`<tr>`+'
+    '`<td><input type="checkbox" class="col-check" checked data-ci="${ci}"></td>`+'
+    '`<td style="color:#718096;font-size:.78rem">${c.name}</td>`+'
+    '`<td><input type="text" class="col-out" value="${c.name}" data-ci="${ci}"></td>`+'
+    '`<td><select class="col-type" data-ci="${ci}">${TYPES.map(tp=>`<option${tp===c.type?" selected":""}>${tp}</option>`).join("")}</select></td>`+'
+    '`<td class="col-sample">${(c.samples||[]).join(", ")}</td>`+'
+    '`</tr>`'
     ').join("");'
-    'document.getElementById("metric-list").innerHTML="";'
-    'document.getElementById("no-metrics").style.display="";'
-    'document.getElementById("metric-header").style.display="none";'
-    'metricSeq=0;}'
-    'function addMetric(){'
-    'const id=++metricSeq;'
-    'const included=(state.cleanCols||[]).filter(c=>c.include);'
-    'const cols=included.map(c=>c.output_name||c.name);'
-    'const row=document.createElement("div");'
-    'row.className="metric-row";row.id=`mr${id}`;'
+    'const otherTbls=Object.keys(state.rawTables).filter(n=>n!==t.table_name);'
+    'const joinBtnDis=otherTbls.length?"":"disabled";'
+    'const noJoinMsg=otherTbls.length?"No joins":"No other tables available for joins";'
+    'const div=document.createElement("div");'
+    'div.className="ts-card";div.id=`ts-${idx}`;'
+    'div.dataset.tsIdx=idx;div.dataset.tsTable=t.table_name;'
+    'div.innerHTML='
+    '`<div class="ts-head" onclick="toggleTs(${idx})">`+'
+    '`<div class="ts-head-info"><span class="ts-name">raw.${t.table_name}</span>`+'
+    '`<span class="ts-meta">${(t.rows||0).toLocaleString()} rows &nbsp;\xb7&nbsp; ${cols.length} cols</span></div>`+'
+    '`<span class="ts-chev" id="chev-${idx}">${expanded?"▲":"▼"}</span>`+'
+    '`</div>`+'
+    '`<div class="ts-body" id="tsb-${idx}" style="${expanded?"":"display:none"}">`+'
+    '`<div class="ts-section">`+'
+    '`<div class="ts-stitle">Columns`+'
+    '`<span style="font-weight:400;color:#4a5568;font-size:.7rem;text-transform:none;letter-spacing:0;margin-left:6px">— uncheck to exclude \xb7 rename \xb7 type</span>`+'
+    '`</div>`+'
+    '`<div class="col-wrap"><table class="col-tbl"><thead><tr>`+'
+    '`<th>Keep</th><th>Source</th><th>Output name</th><th>Type</th><th>Samples</th>`+'
+    '`</tr></thead><tbody>${colRows}</tbody></table></div>`+'
+    '`</div>`+'
+    '`<div class="ts-section">`+'
+    '`<div class="ts-stitle">WHERE Filters`+'
+    '`<button class="btn-link" style="margin-left:8px" onclick="addFilter(${idx})">+ Add filter</button>`+'
+    '`</div>`+'
+    '`<div style="font-size:.73rem;color:#4a5568;margin-bottom:6px">Only rows matching ALL conditions are included.</div>`+'
+    '`<div class="filter-list" id="fl-${idx}"></div>`+'
+    '`<div class="no-msg" id="nf-${idx}">No filters — all rows included</div>`+'
+    '`</div>`+'
+    '`<div class="ts-section">`+'
+    '`<div class="ts-stitle">Computed Columns`+'
+    '`<button class="btn-link" style="margin-left:8px" onclick="addExpr(${idx})">+ Add column</button>`+'
+    '`</div>`+'
+    '`<div style="font-size:.73rem;color:#4a5568;margin-bottom:6px">SQL expressions: <code style="color:#63b3ed">price*qty</code>, <code style="color:#63b3ed">upper(name)</code>, <code style="color:#63b3ed">CASE WHEN score&gt;80 THEN \'A\' ELSE \'B\' END</code></div>`+'
+    '`<div id="el-${idx}" style="display:flex;flex-direction:column;gap:8px"></div>`+'
+    '`<div class="no-msg" id="ne-${idx}">No computed columns</div>`+'
+    '`</div>`+'
+    '`<div class="ts-section">`+'
+    '`<div class="ts-stitle">Join Tables`+'
+    '`<button class="btn-link" style="margin-left:8px" ${joinBtnDis} onclick="addJoin(${idx})">+ Add join</button>`+'
+    '`</div>`+'
+    '`<div style="font-size:.73rem;color:#4a5568;margin-bottom:6px">Type &nbsp;\xb7&nbsp; Table &nbsp;\xb7&nbsp; Left col = Right col</div>`+'
+    '`<div class="join-list" id="jl-${idx}"></div>`+'
+    '`<div class="no-msg" id="nj-${idx}">${noJoinMsg}</div>`+'
+    '`</div>`+'
+    '`<div class="ts-section">`+'
+    '`<div class="ts-stitle">Aggregation</div>`+'
+    '`<label class="agg-toggle"><input type="checkbox" id="at-${idx}" onchange="toggleAgg(${idx},this.checked)">`+'
+    '`&nbsp;Enable GROUP BY &amp; metrics (creates <code style="color:#63b3ed">analytics.*</code> view)</label>`+'
+    '`<div id="ab-${idx}" style="display:none">`+'
+    '`<div class="sub-label">Group By columns</div>`+'
+    '`<div class="chk-grid" id="gb-${idx}"></div>`+'
+    '`<div class="sub-label" style="margin-top:14px">Metrics`+'
+    '`<button class="btn-link" style="margin-left:8px" onclick="addMetric(${idx})">+ Add metric</button></div>`+'
+    '`<div style="display:none;grid-template-columns:1fr 90px 1fr 28px;gap:8px;margin-bottom:6px" id="mh-${idx}">`+'
+    '`<span style="font-size:.7rem;color:#4a5568">Column</span>`+'
+    '`<span style="font-size:.7rem;color:#4a5568">Function</span>`+'
+    '`<span style="font-size:.7rem;color:#4a5568">Output name (optional)</span>`+'
+    '`<span></span></div>`+'
+    '`<div id="ml-${idx}"></div>`+'
+    '`<div class="no-msg" id="nm-${idx}">No metrics</div>`+'
+    '`</div>`+'
+    '`</div>`+'
+    '`</div>`;'
+    'document.getElementById("tables-container").appendChild(div);}'
+    'function toggleTs(idx){'
+    'const b=document.getElementById(`tsb-${idx}`);'
+    'const c=document.getElementById(`chev-${idx}`);'
+    'const h=b.style.display==="none";'
+    'b.style.display=h?"":"none";c.textContent=h?"▲":"▼";}'
+    'function toggleFilterVal(sel){'
+    'const v=sel.closest(".filter-row").querySelector(".filter-val");'
+    'if(v)v.style.display=["IS NULL","IS NOT NULL"].includes(sel.value)?"none":"";}'
+    'function checkEmpty(containerId,noMsgId){'
+    'const c=document.getElementById(containerId);'
+    'const m=document.getElementById(noMsgId);'
+    'if(c&&m)m.style.display=c.children.length?"none":"";}'
+    'function addFilter(idx){'
+    'const t=state.uploadedTables[idx];'
+    'const cols=(t.columns||[]).map(c=>c.name);'
+    'const row=document.createElement("div");row.className="filter-row";'
+    'row.innerHTML='
+    '`<select class="filter-col">${cols.map(n=>`<option>${n}</option>`).join("")}</select>`+'
+    '`<select class="filter-op" onchange="toggleFilterVal(this)">${OPS.map(([v,l])=>`<option value="${v}">${l}</option>`).join("")}</select>`+'
+    '`<input type="text" class="filter-val" placeholder="value">`+'
+    r'`<button class="filter-rm" onclick="this.closest(\'.filter-row\').remove();checkEmpty(\'fl-${idx}\',\'nf-${idx}\')">&#215;</button>`;'
+    'document.getElementById(`fl-${idx}`).appendChild(row);'
+    'document.getElementById(`nf-${idx}`).style.display="none";}'
+    'function addExpr(idx){'
+    'const row=document.createElement("div");row.className="expr-row";'
+    'row.innerHTML='
+    '`<input type="text" class="expr-name" placeholder="column name">`+'
+    '`<span class="expr-eq">=</span>`+'
+    '`<input type="text" class="expr-val" placeholder="e.g. price * qty">`+'
+    r'`<button class="filter-rm" onclick="this.closest(\'.expr-row\').remove();checkEmpty(\'el-${idx}\',\'ne-${idx}\')">&#215;</button>`;'
+    'document.getElementById(`el-${idx}`).appendChild(row);'
+    'document.getElementById(`ne-${idx}`).style.display="none";}'
+    'function addJoin(idx){'
+    'const t=state.uploadedTables[idx];'
+    'const others=Object.keys(state.rawTables).filter(n=>n!==t.table_name);'
+    'if(!others.length)return;'
+    'const firstTbl=others[0];'
+    'const rightCols=state.rawTables[firstTbl]||[];'
+    'const leftCols=(t.columns||[]).map(c=>c.name);'
+    'const id=nextSeq(idx,"j");'
+    'const row=document.createElement("div");row.className="join-row";'
+    'row.innerHTML='
+    '`<select class="join-type">${JOIN_TYPES.map(t=>`<option>${t}</option>`).join("")}</select>`+'
+    '`<select class="join-tbl" onchange="updateJoinRcols(this,${idx},\'jrcol-${idx}-${id}\')">${others.map(t=>`<option>${t}</option>`).join("")}</select>`+'
+    '`<select class="join-lcol">${leftCols.map(c=>`<option>${c}</option>`).join("")}</select>`+'
+    '`<span class="join-eq">=</span>`+'
+    '`<select class="join-rcol" id="jrcol-${idx}-${id}">${rightCols.map(c=>`<option>${c}</option>`).join("")}</select>`+'
+    r'`<button class="filter-rm" onclick="this.closest(\'.join-row\').remove();checkEmpty(\'jl-${idx}\',\'nj-${idx}\')">&#215;</button>`;'
+    'document.getElementById(`jl-${idx}`).appendChild(row);'
+    'document.getElementById(`nj-${idx}`).style.display="none";}'
+    'function updateJoinRcols(sel,idx,rcolId){'
+    'const cols=state.rawTables[sel.value]||[];'
+    'const rcol=document.getElementById(rcolId);'
+    'if(rcol)rcol.innerHTML=cols.map(c=>`<option>${c}</option>`).join("");}'
+    'function toggleAgg(idx,on){'
+    'document.getElementById(`ab-${idx}`).style.display=on?"":"none";'
+    'if(on)refreshGbCols(idx);}'
+    'function refreshGbCols(idx){'
+    'const t=state.uploadedTables[idx];'
+    'const card=document.getElementById(`ts-${idx}`);'
+    'const cols=[];'
+    'card.querySelectorAll(".col-tbl tbody tr").forEach((tr,ci)=>{'
+    'if(tr.querySelector(".col-check").checked){'
+    'const c=t.columns[ci]||{};'
+    'cols.push(tr.querySelector(".col-out").value.trim()||c.name);}});'
+    'document.getElementById(`gb-${idx}`).innerHTML='
+    'cols.map(c=>`<label class="chk-item"><input type="checkbox" data-col="${c}">&nbsp;${c}</label>`).join("");}'
+    'function addMetric(idx){'
+    'const t=state.uploadedTables[idx];'
+    'const card=document.getElementById(`ts-${idx}`);'
+    'const cols=[];'
+    'card.querySelectorAll(".col-tbl tbody tr").forEach((tr,ci)=>{'
+    'if(tr.querySelector(".col-check").checked){'
+    'const c=t.columns[ci]||{};'
+    'cols.push(tr.querySelector(".col-out").value.trim()||c.name);}});'
+    'const row=document.createElement("div");row.className="metric-row";'
     'row.innerHTML='
     '`<select>${cols.map(c=>`<option>${c}</option>`).join("")}</select>`+'
     '`<select>${FNS.map(f=>`<option>${f}</option>`).join("")}</select>`+'
     '`<input type="text" placeholder="e.g. total_revenue">`+'
-    '`<button style="background:none;border:none;color:#4a5568;cursor:pointer;font-size:1.1rem" onclick="this.parentElement.remove();syncMetrics()">&#215;</button>`;'
-    'document.getElementById("metric-list").appendChild(row);'
-    'document.getElementById("no-metrics").style.display="none";'
-    'document.getElementById("metric-header").style.display="";}'
-    'function syncMetrics(){'
-    'const has=document.querySelectorAll(".metric-row").length>0;'
-    'document.getElementById("no-metrics").style.display=has?"none":"";'
-    'document.getElementById("metric-header").style.display=has?"":"none";}'
+    '`<button style="background:none;border:none;color:#4a5568;cursor:pointer;font-size:1.1rem" onclick="syncMetrics(${idx},this)">&#215;</button>`;'
+    'document.getElementById(`ml-${idx}`).appendChild(row);'
+    'document.getElementById(`nm-${idx}`).style.display="none";'
+    'document.getElementById(`mh-${idx}`).style.display="grid";}'
+    'function syncMetrics(idx,btn){'
+    'btn.closest(".metric-row").remove();'
+    'const has=document.querySelectorAll(`#ml-${idx} .metric-row`).length>0;'
+    'document.getElementById(`nm-${idx}`).style.display=has?"none":"";'
+    'document.getElementById(`mh-${idx}`).style.display=has?"grid":"none";}'
     'async function doProcess(){'
+    'const tables=[];'
+    'document.querySelectorAll(".ts-card").forEach(card=>{'
+    'const idx=parseInt(card.dataset.tsIdx);'
+    'const tblName=card.dataset.tsTable;'
+    'const tInfo=state.uploadedTables[idx];'
+    'if(!tInfo)return;'
+    'const cols=[];'
+    'card.querySelectorAll(".col-tbl tbody tr").forEach((tr,ci)=>{'
+    'const c=tInfo.columns[ci]||{};'
+    'cols.push({name:c.name,output_name:tr.querySelector(".col-out").value.trim(),'
+    'type:tr.querySelector(".col-type").value,include:tr.querySelector(".col-check").checked});});'
     'const filters=[];'
-    'document.querySelectorAll(".filter-row").forEach(row=>{'
-    'const op=row.querySelector(".filter-op").value;'
-    'const val=row.querySelector(".filter-val");'
-    'filters.push({column:row.querySelector(".filter-col").value,operator:op,value:val?val.value.trim():""});});'
-    'const mx=[];'
-    'document.querySelectorAll(".metric-row").forEach(row=>{'
-    'const sels=row.querySelectorAll("select");'
-    'mx.push({column:sels[0].value,fn:sels[1].value,output_name:row.querySelector("input[type=text]").value.trim()});});'
-    'const gb=[];'
-    'document.querySelectorAll("#gb-grid input:checked").forEach(inp=>gb.push(inp.dataset.col));'
-    'const btn=document.getElementById("s3-btn");'
-    'const st=document.getElementById("s3-status");'
+    'card.querySelectorAll(".filter-row").forEach(r=>{'
+    'const op=r.querySelector(".filter-op").value;'
+    'const fv=r.querySelector(".filter-val");'
+    'filters.push({column:r.querySelector(".filter-col").value,operator:op,value:fv?fv.value.trim():""});});'
+    'const computed_cols=[];'
+    'card.querySelectorAll(".expr-row").forEach(r=>{'
+    'const nm=r.querySelector(".expr-name").value.trim();'
+    'const ex=r.querySelector(".expr-val").value.trim();'
+    'if(nm&&ex)computed_cols.push({name:nm,expression:ex});});'
+    'const joins=[];'
+    'card.querySelectorAll(".join-row").forEach(r=>{'
+    'joins.push({join_type:r.querySelector(".join-type").value,'
+    'table:r.querySelector(".join-tbl").value,'
+    'left_col:r.querySelector(".join-lcol").value,'
+    'right_col:r.querySelector(".join-rcol").value});});'
+    'const at=document.getElementById(`at-${idx}`);'
+    'const gb=[],mx=[];'
+    'if(at&&at.checked){'
+    'card.querySelectorAll(`#gb-${idx} input:checked`).forEach(inp=>gb.push(inp.dataset.col));'
+    'card.querySelectorAll(`#ml-${idx} .metric-row`).forEach(r=>{'
+    'const ss=r.querySelectorAll("select");'
+    'mx.push({column:ss[0].value,fn:ss[1].value,output_name:r.querySelector("input[type=text]").value.trim()});});}'
+    'tables.push({table:tblName,columns:cols,filters,computed_cols,joins,group_by:gb,metrics:mx});});'
+    'if(!tables.length){document.getElementById("s2-status").innerHTML=\'<span class="err-msg">No tables</span>\';return;}'
+    'const btn=document.getElementById("s2-btn");'
+    'const st=document.getElementById("s2-status");'
     'btn.disabled=true;'
     'st.innerHTML="<div class=\\"spin-wrap\\"><div class=\\"spinner\\"></div>&nbsp;Creating pipeline…</div>";'
     'try{'
     'const r=await fetch("/api/workflow/process",{method:"POST",headers:{"Content-Type":"application/json"},'
-    'body:JSON.stringify({table:state.table,columns:state.cleanCols,filters,group_by:gb,metrics:mx})});'
+    'body:JSON.stringify({tables})});'
     'const j=await r.json();'
-    'if(r.ok){renderResults(j);goStep(4);}'
+    'if(r.ok){renderResults(j);goStep(3);}'
     'else{'
     'const det=j&&j.detail;'
     'const msg=typeof det==="string"?det:det?JSON.stringify(det):"Processing failed";'
     'st.innerHTML=\'<span class="err-msg">\'+msg+\'</span>\';btn.disabled=false;}'
     '}catch(e){st.innerHTML="<span class=\\"err-msg\\">Network error</span>";btn.disabled=false;}}'
     'function renderResults(j){'
-    'let views=`<div style="font-size:.78rem;color:#718096;margin-top:6px">`+'
-    '`<div>Clean view: <code style="color:#a0aec0">${j.clean_view}</code></div>`;'
-    'if(j.agg_view)views+=`<div>Analytics view: <code style="color:#a0aec0">${j.agg_view}</code></div>`;'
-    'views+=`</div>`;'
-    'const html=`<div style="background:#0d1627;border:1px solid #2b4c7e;border-radius:8px;padding:16px;margin-top:4px">`+'
-    '`<div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#63b3ed;margin-bottom:8px">Pipeline</div>`+'
-    '`<div style="font-family:monospace;font-size:.8rem;color:#68d391;margin-bottom:6px">${j.pipeline_id}</div>`+'
-    'views+'
-    '`<div style="margin-top:12px"><a class="btn btn-primary btn-sm" href="${j.airflow_url}" target="_blank">View in Airflow &#8599;</a></div>`+'
-    '`</div>`;'
+    'let html="";'
+    'for(const v of(j.views||[])){'
+    'html+=`<div style="background:#0d1627;border:1px solid #2b4c7e;border-radius:8px;padding:14px;margin-top:8px">`+'
+    '`<div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#63b3ed;margin-bottom:4px">Pipeline</div>`+'
+    '`<div style="font-family:monospace;font-size:.8rem;color:#68d391;margin-bottom:8px">${j.pipeline_id}</div>`+'
+    '`<div style="font-size:.78rem;color:#718096">`+'
+    '`<div>Clean view: <code style="color:#a0aec0">${v.clean_view}</code></div>`;'
+    'if(v.agg_view)html+=`<div>Analytics view: <code style="color:#a0aec0">${v.agg_view}</code></div>`;'
+    'html+=`</div>`+'
+    '`<div style="margin-top:10px"><a class="btn btn-primary btn-sm" href="${j.airflow_url}" target="_blank">View in Airflow &#8599;</a></div>`+'
+    '`</div>`;}'
     'document.getElementById("r-pipelines").innerHTML=html;}'
+    'function resetWizard(){'
+    'state={uploadedTables:[],rawTables:{}};seqs={};'
+    'document.getElementById("r-pipelines").innerHTML="";'
+    'document.getElementById("tables-container").innerHTML="";'
+    'goStep(1);}'
     '</script>'
     '<script>if(location.search.includes("embed=1"))document.querySelectorAll(\'a[href="/"]\').forEach(e=>e.style.display="none");</script>'
     '</body></html>'
 )
+
+
+
+
+
 
 
 @app.get("/workflow", response_class=HTMLResponse)
@@ -2466,45 +2444,54 @@ _UPLOAD_HTML = (
     '.topbar h1{font-size:1rem;font-weight:700}'
     '.topbar a{margin-left:auto;font-size:.8rem;color:#63b3ed;text-decoration:none}'
     '.topbar a:hover{text-decoration:underline}'
-    '.page{flex:1;min-height:0;overflow-y:auto;max-width:680px;margin:0 auto;padding:24px;width:100%}'
-    '.panel-head{margin-bottom:28px}'
+    '.page{flex:1;min-height:0;overflow-y:auto;max-width:700px;margin:0 auto;padding:24px;width:100%}'
+    '.panel-head{margin-bottom:24px}'
     '.panel-head h2{font-size:1.4rem;font-weight:700;margin-bottom:6px}'
     '.panel-head p{color:#a0aec0;font-size:.9rem;line-height:1.6}'
-    '.card{background:#1a1f2e;border:1px solid #2d3748;border-radius:12px;padding:24px;margin-bottom:20px}'
-    '.card-label{font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#718096;margin-bottom:14px;display:flex;align-items:center;gap:10px}'
-    '.drop-zone{border:2px dashed #2d3748;border-radius:10px;padding:40px 24px;text-align:center;'
+    '.card{background:#1a1f2e;border:1px solid #2d3748;border-radius:12px;padding:20px 24px;margin-bottom:16px}'
+    '.drop-zone{border:2px dashed #2d3748;border-radius:10px;padding:36px 24px;text-align:center;'
     'cursor:pointer;transition:border-color .2s,background .2s;position:relative}'
     '.drop-zone:hover,.drop-zone.drag{border-color:#3182ce;background:#0d1627}'
-    '.drop-zone.done{border-color:#48bb78;background:#0d1f14;border-style:solid}'
     '.drop-zone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}'
     '.dz-icon{font-size:2rem;margin-bottom:10px;display:block}'
     '.dz-main{font-size:.9rem;color:#a0aec0;margin-bottom:4px}'
     '.dz-sub{font-size:.75rem;color:#4a5568}'
-    '.dz-name{font-size:1rem;font-weight:600;color:#68d391}'
-    '.field-row{display:flex;align-items:center;gap:10px;margin-top:14px}'
-    '.field-label{font-size:.8rem;color:#718096;white-space:nowrap;min-width:80px}'
-    '.field-prefix{font-size:.85rem;color:#4a5568}'
-    'input[type=text]{background:#0d1117;border:1px solid #2d3748;border-radius:6px;'
-    'padding:8px 12px;color:#e2e8f0;font-size:.875rem;outline:none;flex:1;transition:border-color .15s}'
-    'input[type=text]:focus{border-color:#3182ce}'
-    '.preview-wrap{overflow-x:auto}'
-    '.preview-tbl{width:100%;border-collapse:collapse;font-size:.75rem}'
-    '.preview-tbl th{background:#232a3b;color:#718096;padding:6px 10px;text-align:left;border-bottom:1px solid #2d3748;white-space:nowrap}'
-    '.preview-tbl td{padding:5px 10px;border-bottom:1px solid #1a1f2e;color:#a0aec0;white-space:nowrap}'
-    '.preview-tbl tr:last-child td{border-bottom:none}'
-    '.row-count{font-size:.75rem;color:#4a5568;margin-top:8px}'
-    '.panel-footer{display:flex;align-items:center;gap:12px;margin-top:8px}'
+    '.file-list{display:flex;flex-direction:column;gap:10px;margin-bottom:16px}'
+    '.file-row{background:#1a1f2e;border:1px solid #2d3748;border-radius:10px;padding:14px 18px;'
+    'display:flex;align-items:center;gap:12px;transition:border-color .15s}'
+    '.file-row:hover{border-color:#4a5568}'
+    '.file-icon{font-size:1.3rem;flex-shrink:0}'
+    '.file-info{flex:1;min-width:0}'
+    '.file-name{font-size:.85rem;font-weight:600;color:#e2e8f0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}'
+    '.file-size{font-size:.72rem;color:#4a5568}'
+    '.file-tbl{display:flex;align-items:center;gap:4px;flex-shrink:0}'
+    '.file-tbl span{font-size:.8rem;color:#4a5568;white-space:nowrap}'
+    '.tbl-input{width:130px;background:#0d1117;border:1px solid #2d3748;border-radius:5px;'
+    'padding:5px 8px;color:#e2e8f0;font-size:.8rem;outline:none}'
+    '.tbl-input:focus{border-color:#3182ce}'
+    '.file-status{font-size:.75rem;white-space:nowrap;flex-shrink:0;min-width:90px;text-align:right}'
+    '.file-status.pending{color:#4a5568}'
+    '.file-status.uploading{color:#63b3ed}'
+    '.file-status.done{color:#48bb78}'
+    '.file-status.error{color:#fc8181}'
+    '.filter-rm{background:none;border:none;color:#4a5568;cursor:pointer;font-size:1.2rem;padding:0 2px;line-height:1;flex-shrink:0}'
+    '.filter-rm:hover{color:#fc8181}'
+    '.panel-footer{display:flex;align-items:center;gap:12px;margin-top:4px}'
     '.btn{display:inline-flex;align-items:center;gap:6px;padding:10px 22px;border-radius:8px;'
     'font-size:.875rem;font-weight:600;cursor:pointer;border:none;transition:opacity .15s,background .15s}'
     '.btn:disabled{opacity:.4;cursor:not-allowed}'
     '.btn-primary{background:#3182ce;color:#fff}.btn-primary:hover:not(:disabled){background:#2b6cb0}'
+    '.btn-sm{padding:6px 14px!important;font-size:.8rem!important}'
+    '.btn-ghost{background:#2d3748;color:#e2e8f0}.btn-ghost:hover{background:#3a4459}'
     '.spin-wrap{display:flex;align-items:center;gap:8px;font-size:.85rem;color:#718096}'
     '.spinner{width:14px;height:14px;border:2px solid #2d3748;border-top-color:#63b3ed;border-radius:50%;animation:spin .6s linear infinite}'
     '@keyframes spin{to{transform:rotate(360deg)}}'
     '.err-msg{color:#fc8181;font-size:.85rem}'
-    '.upload-locs{display:flex;flex-direction:column;gap:8px}'
-    '.upload-loc{font-size:.85rem;color:#68d391;display:flex;align-items:flex-start;gap:8px;line-height:1.5}'
-    '.upload-loc code{font-family:monospace;color:#63b3ed;font-size:.8rem;word-break:break-all}'
+    '.success-card{background:#0d1f14;border:1px solid #276749;border-radius:10px;padding:16px 20px}'
+    '.success-card .s-title{font-size:.85rem;font-weight:700;color:#68d391;margin-bottom:10px}'
+    '.loc-row{font-size:.82rem;color:#68d391;display:flex;align-items:flex-start;gap:8px;margin-bottom:6px;line-height:1.5}'
+    '.loc-row code{font-family:monospace;color:#63b3ed;font-size:.78rem;word-break:break-all}'
+    '.use-btn-wrap{margin-top:10px}'
     '</style></head><body>'
     '<div class="topbar">'
     '<div class="logo"><svg viewBox="0 0 16 16" fill="none">'
@@ -2517,104 +2504,96 @@ _UPLOAD_HTML = (
     '<div class="page">'
     '<div class="panel-head">'
     '<h2>Upload your data</h2>'
-    '<p>Drop a CSV file — columns and types will be detected automatically. '
-    'Up to <strong>1,000 rows</strong> are sampled into Postgres <code style="color:#63b3ed">raw</code> schema. '
-    'The full file is stored in MinIO for reference.</p>'
+    '<p>Drop one or more CSV files. Up to <strong>1,000 rows</strong> per file are sampled into Postgres '
+    '<code style="color:#63b3ed">raw</code> schema; the full files are stored in MinIO.</p>'
     '</div>'
     '<div class="card">'
-    '<div class="card-label">1 &nbsp; Choose your file</div>'
     '<div class="drop-zone" id="dz">'
-    '<input type="file" id="fi" accept=".csv" onchange="onFile(this)">'
-    '<div id="dz-idle"><span class="dz-icon">&#128194;</span>'
-    '<div class="dz-main">Drop a CSV file here, or click to browse</div>'
-    '<div class="dz-sub">.csv files only</div></div>'
-    '<div id="dz-done" style="display:none"><span class="dz-icon">&#9989;</span>'
-    '<div class="dz-name" id="dz-fname"></div>'
-    '<div class="dz-sub" id="dz-fsize"></div></div>'
-    '</div>'
-    '<div class="field-row">'
-    '<span class="field-label">Table name</span>'
-    '<span class="field-prefix">raw.</span>'
-    '<input type="text" id="tbl-input" placeholder="my_table" oninput="checkReady()">'
+    '<input type="file" id="fi" accept=".csv" multiple>'
+    '<span class="dz-icon">&#128194;</span>'
+    '<div class="dz-main">Drop CSV files here, or click to browse</div>'
+    '<div class="dz-sub">.csv files only &nbsp;\xb7&nbsp; multiple files supported</div>'
     '</div>'
     '</div>'
-    '<div class="card" id="preview-card" style="display:none">'
-    '<div class="card-label">2 &nbsp; Preview <span style="font-weight:400;text-transform:none;color:#4a5568">&nbsp;first 5 rows</span></div>'
-    '<div class="preview-wrap"><div id="preview-body"></div></div>'
-    '<div class="row-count" id="row-count"></div>'
-    '</div>'
-    '<div class="panel-footer" id="up-footer">'
-    '<button class="btn btn-primary" id="up-btn" onclick="doUpload()" disabled>Load into DataFabrik &#8594;</button>'
+    '<div class="file-list" id="file-list"></div>'
+    '<div class="panel-footer" id="up-footer" style="display:none">'
+    '<button class="btn btn-primary" id="up-btn" onclick="uploadAll()">Upload All &#8599;</button>'
     '<div id="up-status"></div>'
     '</div>'
-    '<div id="upload-success" style="display:none">'
-    '<div class="card" style="background:#0d1f14;border-color:#276749;margin-top:0">'
-    '<div class="upload-locs" id="upload-locs"></div>'
-    '</div>'
-    '</div>'
+    '<div id="results"></div>'
     '</div>'
     '<script>'
-    'let file=null;'
+    'let queue=[];let qseq=0;let allDone=[];'
     'const dz=document.getElementById("dz");'
     'dz.addEventListener("dragover",e=>{e.preventDefault();dz.classList.add("drag")});'
     'dz.addEventListener("dragleave",()=>dz.classList.remove("drag"));'
-    'dz.addEventListener("drop",e=>{e.preventDefault();dz.classList.remove("drag");'
-    'const f=e.dataTransfer.files[0];if(f&&f.name.toLowerCase().endsWith(".csv"))applyFile(f);});'
-    'function onFile(inp){if(inp.files[0])applyFile(inp.files[0]);}'
-    'function applyFile(f){'
-    'file=f;'
-    'document.getElementById("dz-idle").style.display="none";'
-    'document.getElementById("dz-done").style.display="";'
-    'document.getElementById("dz-fname").textContent=f.name;'
-    'document.getElementById("dz-fsize").textContent=(f.size/1024).toFixed(1)+" KB";'
-    'dz.classList.add("done");'
+    'dz.addEventListener("drop",e=>{e.preventDefault();dz.classList.remove("drag");addFiles(e.dataTransfer.files);});'
+    'document.getElementById("fi").addEventListener("change",e=>{addFiles(e.target.files);e.target.value="";});'
+    'function addFiles(files){'
+    'for(const f of files){'
+    'if(!f.name.toLowerCase().endsWith(".csv"))continue;'
+    'const id=++qseq;'
+    'queue.push({id,file:f,status:"pending"});'
     'const stem=f.name.replace(/\\.csv$/i,"").replace(/[^a-z0-9]+/gi,"_").toLowerCase();'
-    'const inp=document.getElementById("tbl-input");'
-    'if(!inp.value)inp.value=stem;'
-    'previewFile();checkReady();}'
-    'function checkReady(){'
-    'const t=document.getElementById("tbl-input").value.trim();'
-    'document.getElementById("up-btn").disabled=!(file&&t);}'
-    'async function previewFile(){'
-    'const txt=await file.text();'
-    'const lines=txt.trim().split("\\n");'
-    'const totalRows=lines.length-1;'
-    'const prev=lines.slice(0,6);'
-    'const hdrs=prev[0].split(",");'
-    'let h=\'<table class="preview-tbl"><thead><tr>\';'
-    'hdrs.forEach(c=>h+=\'<th>\'+c.trim()+\'</th>\');'
-    'h+=\'</tr></thead><tbody>\';'
-    'prev.slice(1).forEach(ln=>{h+=\'<tr>\';ln.split(",").forEach(v=>h+=\'<td>\'+v.trim()+\'</td>\');h+=\'</tr>\';});'
-    'h+=\'</tbody></table>\';'
-    'document.getElementById("preview-body").innerHTML=h;'
-    'document.getElementById("row-count").textContent=totalRows+" rows total \xb7 "+hdrs.length+" columns";'
-    'document.getElementById("preview-card").style.display="";}'
-    'async function doUpload(){'
-    'const tbl=document.getElementById("tbl-input").value.trim();'
+    'const row=document.createElement("div");row.className="file-row";row.id=`fr${id}`;'
+    'row.innerHTML='
+    '`<span class="file-icon">&#128196;</span>`+'
+    '`<div class="file-info"><div class="file-name">${f.name}</div><div class="file-size">${(f.size/1024).toFixed(1)} KB</div></div>`+'
+    '`<div class="file-tbl"><span>raw.</span><input type="text" class="tbl-input" value="${stem}" placeholder="table_name"></div>`+'
+    '`<div class="file-status pending" id="fs${id}">Pending</div>`+'
+    '`<button class="filter-rm" onclick="removeRow(${id})">&#215;</button>`;'
+    'document.getElementById("file-list").appendChild(row);}'
+    'document.getElementById("up-footer").style.display=queue.length?"":"none";}'
+    'function removeRow(id){'
+    'queue=queue.filter(i=>i.id!==id);'
+    'const r=document.getElementById(`fr${id}`);if(r)r.remove();'
+    'document.getElementById("up-footer").style.display=queue.length?"":"none";}'
+    'function setStatus(id,cls,text){'
+    'const el=document.getElementById(`fs${id}`);'
+    'if(el){el.className="file-status "+cls;el.textContent=text;}}'
+    'async function uploadAll(){'
+    'const pending=queue.filter(i=>i.status==="pending");'
+    'if(!pending.length)return;'
     'const btn=document.getElementById("up-btn");'
-    'const st=document.getElementById("up-status");'
     'btn.disabled=true;'
-    'st.innerHTML=\'<div class="spin-wrap"><div class="spinner"></div>&nbsp;Uploading to Postgres + MinIO…</div>\';'
-    'const fd=new FormData();fd.append("table",tbl);fd.append("file",file);'
+    'const done=[];'
+    'for(const item of pending){'
+    'const row=document.getElementById(`fr${item.id}`);'
+    'if(!row)continue;'
+    'const tbl=row.querySelector(".tbl-input").value.trim();'
+    'if(!tbl){setStatus(item.id,"error","Need table name");continue;}'
+    'setStatus(item.id,"uploading","Uploading…");'
     'try{'
+    'const fd=new FormData();fd.append("table",tbl);fd.append("file",item.file);'
     'const r=await fetch("/api/workflow/upload",{method:"POST",body:fd});'
     'const j=await r.json();'
     'if(r.ok){'
-    'st.innerHTML="";'
-    'document.getElementById("up-footer").style.display="none";'
-    'document.getElementById("upload-success").style.display="";'
-    'const sampledNote=j.sampled?` (sampled ${j.rows.toLocaleString()} of ${j.total_rows.toLocaleString()})`:` — ${j.rows.toLocaleString()} rows`;'
-    'document.getElementById("upload-locs").innerHTML='
-    '\'<div class="upload-loc">&#10003; Postgres: <code>\'+j.postgres_table+\'</code>\'+sampledNote+\'</div>\''
-    '+\'<div class="upload-loc">&#10003; MinIO: <code>\'+j.s3_bucket+\'/\'+j.s3_key+\'</code></div>\';'
-    'window.parent.postMessage({type:"datafabrik_upload",table_name:j.table_name,rows:j.rows,'
-    'columns:j.columns,postgres_table:j.postgres_table,s3_bucket:j.s3_bucket,s3_key:j.s3_key},"*");'
+    'item.status="done";item.result=j;done.push(j);'
+    'const note=j.sampled?` (${j.rows.toLocaleString()} of ${j.total_rows.toLocaleString()} rows)`:`  (${j.rows.toLocaleString()} rows)`;'
+    'setStatus(item.id,"done","✓ raw."+j.table_name+note);'
     '}else{'
-    'st.innerHTML=\'<span class="err-msg">&#10007; \'+(j.detail||"Upload failed")+\'</span>\';'
-    'btn.disabled=false;}'
-    '}catch(e){'
-    'st.innerHTML=\'<span class="err-msg">&#10007; Network error</span>\';'
-    'btn.disabled=false;}}'
+    'item.status="error";'
+    'setStatus(item.id,"error","✗ "+(j.detail||"Failed"));}}'
+    'catch(e){item.status="error";setStatus(item.id,"error","✗ Network error");}}'
+    'btn.disabled=false;'
+    'if(done.length){allDone=done;showResults(done);}}'
+    'const isEmbed=location.search.includes("embed=1");'
+    'function showResults(results){'
+    'const el=document.getElementById("results");'
+    'let html="";'
+    'for(const j of results){'
+    'const note=j.sampled?` (sampled ${j.rows.toLocaleString()} of ${j.total_rows.toLocaleString()})`:` — ${j.rows.toLocaleString()} rows`;'
+    'html+=`<div class="success-card" style="margin-bottom:12px">`+'
+    '`<div class="s-title">✓ raw.${j.table_name}${note}</div>`+'
+    '`<div class="loc-row">✓ Postgres: <code>raw.${j.table_name}</code></div>`+'
+    '`<div class="loc-row">✓ MinIO: <code>${j.s3_bucket}/${j.s3_key}</code></div>`+'
+    '`</div>`;}'
+    'if(isEmbed&&results.length){'
+    'html+=`<div style="margin-top:16px"><button class="btn btn-primary" onclick="useAllTables()">`+'
+    '`Use ${results.length} table${results.length>1?"s":""} in Pipeline Builder &#8594;</button></div>`;}'
+    'el.innerHTML=html;}'
+    'function useAllTables(){'
+    'window.parent.postMessage({type:"datafabrik_upload",tables:allDone},"*");}'
     '</script>'
     '<script>if(location.search.includes("embed=1")){'
     'document.documentElement.style.height="auto";'
@@ -2627,6 +2606,8 @@ _UPLOAD_HTML = (
     '</script>'
     '</body></html>'
 )
+
+
 
 
 @app.post("/api/upload/csv")

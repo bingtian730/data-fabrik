@@ -1,78 +1,91 @@
 # DataFabrik
 
-DataFabrik is an AI-native cloud data platform that automates data engineering, analytics, and reporting workflows using AWS infrastructure and intelligent agents.
+A local data platform that runs entirely in Docker. Upload a CSV, build a cleaning pipeline, and query results in Postgres — all from a single browser-based portal.
 
-## Core Stack
+## What's included
 
-- AWS
-- Terraform
-- Airflow
-- EMR / Spark
-- dbt
-- Presto
-- Looker
-- Claude on Amazon Bedrock
+| Service | Purpose |
+|---|---|
+| **Portal** (FastAPI) | Central UI — pipeline wizard, monitoring, guide |
+| **Airflow** | Pipeline orchestration and scheduling |
+| **MinIO** | Local S3-compatible object storage |
+| **Postgres** | Data warehouse (`raw`, `clean`, `analytics` schemas) |
+| **Metabase** | Dashboards and SQL exploration |
 
-## MVP Goal
+## Requirements
 
-Create a config-driven dynamic pipeline factory where adding a new customer pipeline requires mostly YAML configuration instead of custom engineering work.
+- [Docker Desktop](https://www.docker.com/products/docker-desktop) 4.30+ (Mac or Windows with WSL2, or Linux with Docker Engine 24+)
+- ~6 GB free RAM
 
-## Local Development
+## Download & run
 
-The repo ships with a [docker-compose.yml](docker-compose.yml) that boots the full local stack: Airflow, Postgres, MinIO, dbt, Presto, and the FastAPI service.
+**Option A — one-liner (Mac / Linux)**
 
-### Prerequisites
+```bash
+git clone https://github.com/bingtian730/data-fabrik.git
+cd data-fabrik
+./install.sh
+```
 
-- Docker Desktop 4.30+ (or Docker Engine 24+ with Compose v2)
-- ~6 GB free memory for the stack
+**Option B — no Git (download ZIP)**
 
-### First-time setup
+1. Download: [⬇ data-fabrik-main.zip](https://github.com/bingtian730/data-fabrik/archive/refs/heads/main.zip)
+2. Unzip it and open a terminal inside the folder
+3. Run:
 
 ```bash
 cp .env.example .env
-# Linux only: set AIRFLOW_UID to your host UID so Airflow can write to mounted log volumes.
-# Do NOT set this on macOS — the Docker Desktop VM handles permissions, and an
-# unknown UID inside the container breaks `airflow` commands.
-#   echo "AIRFLOW_UID=$(id -u)" >> .env
-
 docker compose up -d --build
 ```
 
-Initial boot pulls images and runs Airflow DB migrations — expect ~3 minutes on a cold cache.
+4. Open **http://localhost:8000** once containers are up (~3 min on first run)
 
-### Service endpoints
+## How it works
 
-| Service       | URL                          | Credentials             |
-| ------------- | ---------------------------- | ----------------------- |
-| Airflow UI    | http://localhost:8080        | `admin` / `admin`       |
-| FastAPI       | http://localhost:8000/docs   | —                       |
-| MinIO console | http://localhost:9001        | `minioadmin` / `minioadmin` |
-| MinIO S3 API  | http://localhost:9000        | same as console         |
-| Presto UI     | http://localhost:8081        | —                       |
-| Postgres      | `localhost:5433`             | `postgres` / `postgres` |
-
-Default databases: `airflow` (Airflow metadata) and `datafabrik` (app data, dbt target).
-
-Default MinIO buckets: `datafabrik-raw`, `datafabrik-staging`, `datafabrik-curated`.
-
-### Smoke test
-
-```bash
-./scripts/smoke-test.sh
+```
+📄 Upload CSV           →    🗄️ MinIO Storage
+                                    ↓
+                             ✈️ Airflow Pipeline
+                                    ↓
+                             🐘 Postgres  (clean · analytics schemas)
 ```
 
-Verifies Postgres, MinIO buckets, Airflow, Presto (`SELECT count(*) FROM tpch.tiny.nation`), and FastAPI.
+The full step-by-step is available in the **Pipeline Guide** tab inside the portal.
 
-### Running dbt
+## Service URLs
+
+| Service | URL | Credentials |
+|---|---|---|
+| **Portal** | http://localhost:8000 | — |
+| Airflow | http://localhost:8080 | `admin` / `admin` |
+| MinIO console | http://localhost:9001 | `minioadmin` / `minioadmin` |
+| Metabase | http://localhost:3000 | — |
+| Postgres | `localhost:5433` | `postgres` / `postgres` |
+
+## Stop / reset
 
 ```bash
-docker compose exec dbt dbt debug
-docker compose exec dbt dbt run
+# Stop containers (data is preserved)
+docker compose down
+
+# Stop and delete all data volumes (fresh start)
+docker compose down -v
 ```
 
-### Tearing down
+## Troubleshooting
 
+**Services not starting?**
 ```bash
-docker compose down            # stop containers, keep volumes
-docker compose down -v         # also delete data volumes
+docker compose logs fastapi
+docker compose logs airflow-webserver
+```
+
+**Port conflict?**  
+Edit `.env` and change `POSTGRES_HOST_PORT` (default `5433`), then restart with `docker compose down && docker compose up -d`.
+
+**Airflow log permission errors on Linux?**  
+The `install.sh` script handles this automatically. If setting up manually:
+```bash
+echo "AIRFLOW_UID=$(id -u)" >> .env
+docker compose down && docker compose up -d
 ```
