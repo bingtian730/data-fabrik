@@ -61,7 +61,7 @@ The full step-by-step is available in the **Pipeline Guide** tab inside the port
 | **Portal** | http://localhost:8000 | — |
 | Airflow | http://localhost:8080 | `admin` / `admin` |
 | MinIO console | http://localhost:9001 | `minioadmin` / `minioadmin` |
-| Metabase | http://localhost:3000 | — |
+| Metabase | http://localhost:3000 | first-run setup wizard (create your own account) |
 | Postgres | `localhost:5433` | `postgres` / `postgres` |
 
 ## Stop / reset
