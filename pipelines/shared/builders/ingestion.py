@@ -14,6 +14,7 @@ from pipelines.shared.schema.sources import (
     JdbcSourceConfig,
     MinioCsvSourceConfig,
     S3CsvSourceConfig,
+    WizardCsvSourceConfig,
 )
 
 if TYPE_CHECKING:
@@ -208,6 +209,28 @@ def minio_csv(
                 conn.execute(text(f'INSERT INTO raw."{table}" ({col_list}) VALUES ({placeholders})'), data)
 
         print(f"[minio_csv] loaded {len(rows)} rows → raw.\"{table}\"")
+
+    return PythonOperator(task_id=stage, python_callable=_run, dag=dag)
+
+
+@register("ingestion", "wizard_csv")
+def wizard_csv(
+    *,
+    stage: str,
+    stage_config: WizardCsvSourceConfig,
+    pipeline: PipelineConfig,
+    dag: DAG,
+) -> BaseOperator:
+    def _run(**_):
+        info = {
+            "source_location": f"s3://{stage_config.bucket}/{stage_config.key}",
+            "source_filename": stage_config.filename,
+            "raw_table": f"raw.{stage_config.table}",
+        }
+        print(f"[wizard_csv] source_location : {info['source_location']}")
+        print(f"[wizard_csv] source_filename  : {info['source_filename']}")
+        print(f"[wizard_csv] raw_table        : {info['raw_table']}")
+        return info
 
     return PythonOperator(task_id=stage, python_callable=_run, dag=dag)
 

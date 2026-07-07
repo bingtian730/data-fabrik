@@ -38,6 +38,22 @@ def _s3_client():
         aws_secret_access_key=S3_SECRET_KEY,
     )
 
+
+def _latest_wizard_file(table_name: str) -> tuple[str, str] | None:
+    """Return (key, filename) of the most recent wizard upload for this table, or None."""
+    try:
+        resp = _s3_client().list_objects_v2(
+            Bucket="datafabrik-raw", Prefix=f"wizard/{table_name}/"
+        )
+        objects = resp.get("Contents", [])
+        if not objects:
+            return None
+        latest = max(objects, key=lambda o: o["LastModified"])
+        key = latest["Key"]
+        return key, key.rsplit("/", 1)[-1]
+    except Exception:
+        return None
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _airflow(path: str) -> dict:
@@ -1826,6 +1842,40 @@ class _TableProcessConfig(BaseModel):
 
 class _ProcessPayload(BaseModel):
     tables: list[_TableProcessConfig]
+    custom_sql: str | None = None
+
+
+@app.post("/api/workflow/preview-sql")
+def api_preview_sql(payload: _ProcessPayload) -> dict:
+    """Return generated SQL from the builder config without writing any files."""
+    if not payload.tables:
+        raise HTTPException(status_code=400, detail="No tables provided")
+
+    sql_parts: list[str] = ["CREATE SCHEMA IF NOT EXISTS clean;"]
+    if any(t.metrics for t in payload.tables):
+        sql_parts.append("CREATE SCHEMA IF NOT EXISTS analytics;")
+
+    for tbl_cfg in payload.tables:
+        table = _safe_name(tbl_cfg.table)
+        if not table:
+            continue
+        clean_sql = _generate_clean_sql(
+            table,
+            [c.model_dump() for c in tbl_cfg.columns],
+            [f.model_dump() for f in tbl_cfg.filters],
+            [j.model_dump() for j in tbl_cfg.joins],
+            [cc.model_dump() for cc in tbl_cfg.computed_cols],
+        )
+        sql_parts.append(f'CREATE OR REPLACE VIEW clean."{table}" AS\n{clean_sql};')
+        if tbl_cfg.metrics:
+            agg_sql = _generate_agg_sql(
+                table, tbl_cfg.group_by, [m.model_dump() for m in tbl_cfg.metrics]
+            )
+            sql_parts.append(
+                f'CREATE OR REPLACE VIEW analytics."{table}" AS\n{agg_sql};'
+            )
+
+    return {"sql": "\n".join(sql_parts) + "\n"}
 
 
 @app.post("/api/workflow/process")
@@ -1873,14 +1923,31 @@ def api_process(payload: _ProcessPayload) -> dict:
     table_names = ", ".join(_safe_name(t.table) for t in payload.tables)
     tags        = ["generated", "wizard"] + [_safe_name(t.table) for t in payload.tables]
 
+    # Build optional ingestion block with source XCom info
+    ingestion_block = ""
+    s3_info = _latest_wizard_file(first)
+    if s3_info:
+        s3_key, s3_filename = s3_info
+        ingestion_block = (
+            f"  ingestion:\n"
+            f"    type: wizard_csv\n"
+            f"    bucket: datafabrik-raw\n"
+            f"    key: {s3_key}\n"
+            f"    filename: {s3_filename}\n"
+            f"    table: {first}\n"
+        )
+
+    sql_content = payload.custom_sql if payload.custom_sql else "\n".join(sql_parts) + "\n"
+
     _CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
-    (_CONFIGS_DIR / f"{pid}.sql").write_text("\n".join(sql_parts) + "\n")
+    (_CONFIGS_DIR / f"{pid}.sql").write_text(sql_content)
     (_CONFIGS_DIR / f"{pid}.yaml").write_text(
         f"pipeline_id: {pid}\n"
         f"description: Wizard pipeline for {table_names}\n"
         f"tags: [{', '.join(tags)}]\n\n"
         f"schedule:\n  preset: \"@once\"\n  retries: 1\n\n"
         f"stages:\n"
+        + ingestion_block +
         f"  transformation:\n"
         f"    type: sql\n"
         f"    sql_file: /opt/airflow/configs/pipelines/{pid}.sql\n"
@@ -2184,7 +2251,9 @@ _WORKFLOW_HTML = (
     '<div class="si-sep"></div>'
     '<div class="si" id="si2"><div class="si-circle">2</div>Pipeline Builder</div>'
     '<div class="si-sep"></div>'
-    '<div class="si" id="si3"><div class="si-circle">3</div>Results</div>'
+    '<div class="si" id="si3"><div class="si-circle">3</div>SQL Editor</div>'
+    '<div class="si-sep"></div>'
+    '<div class="si" id="si4"><div class="si-circle">4</div>Results</div>'
     '</div>'
     '<div id="p1" class="panel active">'
     '<iframe id="upload-frame" src="/upload?embed=1"'
@@ -2202,11 +2271,30 @@ _WORKFLOW_HTML = (
     '<div id="tables-container"></div>'
     '<div class="panel-footer">'
     '<button class="btn btn-ghost" onclick="goStep(1)">&#8592; Back</button>'
-    '<button class="btn btn-primary" id="s2-btn" onclick="doProcess()">Process &amp; Load &#8594;</button>'
+    '<button class="btn btn-primary" id="s2-btn" onclick="previewSql()">Preview SQL &#8594;</button>'
     '<div id="s2-status"></div>'
     '</div>'
     '</div>'
     '<div id="p3" class="panel">'
+    '<div class="panel-head"><h2>SQL Editor</h2>'
+    '<p>Review or edit the SQL before building. The pipeline runs exactly this SQL against your raw data in Postgres.</p></div>'
+    '<div class="card" style="padding:16px 20px">'
+    '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">'
+    '<span style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#718096">SQL — edit freely or leave as generated</span>'
+    '<button class="btn-link" onclick="resetSql()">&#8635; Reset to generated</button>'
+    '</div>'
+    '<textarea id="sql-editor" spellcheck="false"'
+    ' style="width:100%;height:320px;background:#0d1117;border:1px solid #2d3748;border-radius:8px;'
+    'padding:14px;color:#68d391;font-family:monospace;font-size:.8rem;resize:vertical;outline:none;line-height:1.6;tab-size:2">'
+    '</textarea>'
+    '</div>'
+    '<div class="panel-footer">'
+    '<button class="btn btn-ghost" onclick="goStep(2)">&#8592; Back</button>'
+    '<button class="btn btn-primary" id="s3-btn" onclick="doProcess()">Build Pipeline &#8594;</button>'
+    '<div id="s3-status"></div>'
+    '</div>'
+    '</div>'
+    '<div id="p4" class="panel">'
     '<div class="card">'
     '<div class="success-block"><span class="s-icon">&#9989;</span><h2>Pipeline Triggered!</h2></div>'
     '<div id="r-pipelines"></div>'
@@ -2221,7 +2309,7 @@ _WORKFLOW_HTML = (
     '<a class="btn btn-primary" href="http://localhost:3001" target="_blank">Open Metabase &#8599;</a>'
     '</div>'
     '<div class="panel-footer" style="justify-content:center;gap:12px;padding-top:16px;border-top:1px solid #2d3748;margin-top:16px">'
-    '<button class="btn btn-ghost" onclick="goStep(2)">&#8592; Back</button>'
+    '<button class="btn btn-ghost" onclick="goStep(3)">&#8592; Back</button>'
     '<button class="btn btn-primary" onclick="resetWizard()">&#10003; Complete</button>'
     '</div>'
     '</div>'
@@ -2232,7 +2320,7 @@ _WORKFLOW_HTML = (
     'const OPS=[["=","equals"],["!=","not equals"],[">=",">="],["<=","<="],["LIKE","contains"],["IS NULL","is empty"],["IS NOT NULL","not empty"]];'
     'const JOIN_TYPES=["LEFT","INNER","RIGHT"];'
     'const FNS=["SUM","COUNT","AVG","MIN","MAX"];'
-    'let state={uploadedTables:[],rawTables:{}};'
+    'let state={uploadedTables:[],rawTables:{},generatedSql:"",lastTables:[]};'
     'let seqs={};'
     'function nextSeq(i,t){if(!seqs[i])seqs[i]={};if(!seqs[i][t])seqs[i][t]=0;return++seqs[i][t];}'
     'window.addEventListener("message",function(e){'
@@ -2260,7 +2348,7 @@ _WORKFLOW_HTML = (
     'function goStep(n){'
     'document.querySelectorAll(".panel").forEach(p=>p.classList.remove("active"));'
     'document.getElementById(`p${n}`).classList.add("active");'
-    '["si1","si2","si3"].forEach((id,i)=>{'
+    '["si1","si2","si3","si4"].forEach((id,i)=>{'
     'const el=document.getElementById(id);'
     'if(el)el.className="si"+(i+1<n?" done":i+1===n?" active":"");});'
     'if(n===1){document.getElementById("s1-continue").style.display="none";const fr=document.getElementById("upload-frame");if(fr)fr.src="/upload?embed=1";}'
@@ -2430,7 +2518,7 @@ _WORKFLOW_HTML = (
     'const has=document.querySelectorAll(`#ml-${idx} .metric-row`).length>0;'
     'document.getElementById(`nm-${idx}`).style.display=has?"none":"";'
     'document.getElementById(`mh-${idx}`).style.display=has?"grid":"none";}'
-    'async function doProcess(){'
+    'function collectTables(){'
     'const tables=[];'
     'document.querySelectorAll(".ts-card").forEach(card=>{'
     'const idx=parseInt(card.dataset.tsIdx);'
@@ -2466,16 +2554,43 @@ _WORKFLOW_HTML = (
     'const ss=r.querySelectorAll("select");'
     'mx.push({column:ss[0].value,fn:ss[1].value,output_name:r.querySelector("input[type=text]").value.trim()});});}'
     'tables.push({table:tblName,columns:cols,filters,computed_cols,joins,group_by:gb,metrics:mx});});'
+    'return tables;}'
+    'async function previewSql(){'
+    'const tables=collectTables();'
     'if(!tables.length){document.getElementById("s2-status").innerHTML=\'<span class="err-msg">No tables</span>\';return;}'
+    'state.lastTables=tables;'
     'const btn=document.getElementById("s2-btn");'
     'const st=document.getElementById("s2-status");'
     'btn.disabled=true;'
-    'st.innerHTML="<div class=\\"spin-wrap\\"><div class=\\"spinner\\"></div>&nbsp;Creating pipeline…</div>";'
+    'st.innerHTML="<div class=\\"spin-wrap\\"><div class=\\"spinner\\"></div>&nbsp;Generating SQL…</div>";'
     'try{'
-    'const r=await fetch("/api/workflow/process",{method:"POST",headers:{"Content-Type":"application/json"},'
+    'const r=await fetch("/api/workflow/preview-sql",{method:"POST",headers:{"Content-Type":"application/json"},'
     'body:JSON.stringify({tables})});'
     'const j=await r.json();'
-    'if(r.ok){renderResults(j);goStep(3);}'
+    'if(r.ok){'
+    'state.generatedSql=j.sql;'
+    'document.getElementById("sql-editor").value=j.sql;'
+    'goStep(3);'
+    '}else{'
+    'const det=j&&j.detail;'
+    'const msg=typeof det==="string"?det:det?JSON.stringify(det):"Preview failed";'
+    'st.innerHTML=\'<span class="err-msg">\'+msg+\'</span>\';'
+    'btn.disabled=false;}'
+    '}catch(e){st.innerHTML="<span class=\\"err-msg\\">Network error</span>";btn.disabled=false;}}'
+    'function resetSql(){document.getElementById("sql-editor").value=state.generatedSql||"";}'
+    'async function doProcess(){'
+    'const tables=state.lastTables;'
+    'const customSql=document.getElementById("sql-editor").value.trim();'
+    'if(!tables||!tables.length){document.getElementById("s3-status").innerHTML=\'<span class="err-msg">No tables — go back to Pipeline Builder</span>\';return;}'
+    'const btn=document.getElementById("s3-btn");'
+    'const st=document.getElementById("s3-status");'
+    'btn.disabled=true;'
+    'st.innerHTML="<div class=\\"spin-wrap\\"><div class=\\"spinner\\"></div>&nbsp;Building pipeline…</div>";'
+    'try{'
+    'const r=await fetch("/api/workflow/process",{method:"POST",headers:{"Content-Type":"application/json"},'
+    'body:JSON.stringify({tables,custom_sql:customSql})});'
+    'const j=await r.json();'
+    'if(r.ok){renderResults(j);goStep(4);}'
     'else{'
     'const det=j&&j.detail;'
     'const msg=typeof det==="string"?det:det?JSON.stringify(det):"Processing failed";'
@@ -2495,7 +2610,7 @@ _WORKFLOW_HTML = (
     '`</div>`;}'
     'document.getElementById("r-pipelines").innerHTML=html;}'
     'function resetWizard(){'
-    'state={uploadedTables:[],rawTables:{}};seqs={};'
+    'state={uploadedTables:[],rawTables:{},generatedSql:"",lastTables:[]};seqs={};'
     'document.getElementById("r-pipelines").innerHTML="";'
     'document.getElementById("tables-container").innerHTML="";'
     'goStep(1);}'

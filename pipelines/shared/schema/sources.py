@@ -58,7 +58,17 @@ class MinioCsvSourceConfig(_SourceBase):
     table: str = Field(description="Target table name in the raw schema, e.g. 'orders'.")
 
 
+class WizardCsvSourceConfig(_SourceBase):
+    """Source metadata for wizard-generated pipelines. Pushes XCom with file info."""
+
+    type: Literal["wizard_csv"]
+    bucket: str = "datafabrik-raw"
+    key: str = Field(description="Full MinIO object key, e.g. 'wizard/orders/orders_20260707.csv'.")
+    filename: str = Field(description="Bare filename, e.g. 'orders_20260707.csv'.")
+    table: str = Field(description="Raw table name the file was loaded into.")
+
+
 SourceConfig = Annotated[
-    Union[S3CsvSourceConfig, HttpApiSourceConfig, JdbcSourceConfig, MinioCsvSourceConfig],
+    Union[S3CsvSourceConfig, HttpApiSourceConfig, JdbcSourceConfig, MinioCsvSourceConfig, WizardCsvSourceConfig],
     Field(discriminator="type"),
 ]

@@ -27,6 +27,7 @@ def sql(
 ) -> BaseOperator:
     def _run(**_):
         import os
+        import re
         from pathlib import Path
         from sqlalchemy import create_engine, text as sa_text
 
@@ -44,7 +45,19 @@ def sql(
                 stmt = statement.strip()
                 if stmt:
                     conn.execute(sa_text(stmt))
-        print("[sql] executed successfully")
+
+        view_re = re.compile(
+            r'CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+"?(\w+)"?\."?(\w+)"?',
+            re.IGNORECASE,
+        )
+        outputs = [
+            {"database": "datafabrik", "schema": schema, "table": table}
+            for schema, table in view_re.findall(sql_str)
+        ]
+        for o in outputs:
+            print(f"[sql] output → {o['database']}.{o['schema']}.{o['table']}")
+        print(f"[sql] executed successfully — {len(outputs)} view(s) created")
+        return {"outputs": outputs}
 
     return PythonOperator(task_id=stage, python_callable=_run, dag=dag)
 
