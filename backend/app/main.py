@@ -1059,7 +1059,7 @@ async function togglePause(dagId, currentlyPaused, btn) {
 }
 
 async function deleteDag(dagId, btn) {
-  if (!confirm('Delete DAG "' + dagId + '" from Airflow?\n\nThis also removes any local config files for this pipeline.')) return;
+  if (!confirm('Delete DAG "' + dagId + '" from Airflow? This also removes any local config files for this pipeline.')) return;
   btn.disabled = true;
   btn.textContent = '…';
   const row = document.getElementById('pipe-row-' + dagId);
@@ -1585,8 +1585,8 @@ def _generate_clean_sql(table: str, columns: list, filters: list, joins: list = 
     for col in columns:
         if not col.get("include", True):
             continue
-        src   = col["name"]
-        out   = col.get("output_name") or src
+        src   = _safe_name(col["name"])          # actual column name in raw table
+        out   = _safe_name(col.get("output_name") or col["name"])
         dtype = col.get("type", "TEXT")
         if dtype not in _VALID_TYPES:
             dtype = "TEXT"
@@ -1602,7 +1602,7 @@ def _generate_clean_sql(table: str, columns: list, filters: list, joins: list = 
     where_parts = []
     for f in filters:
         op  = f.get("operator", "=")
-        col = f.get("column", "")
+        col = _safe_name(f.get("column", ""))   # match the sanitised column name
         val = f.get("value", "")
         if op not in _VALID_OPS or not col:
             continue
@@ -1628,9 +1628,9 @@ def _generate_clean_sql(table: str, columns: list, filters: list, joins: list = 
         join_lines = ""
         for j in valid_joins:
             jt     = j["join_type"].upper()
-            jtable = j["table"]
-            lcol   = j["left_col"]
-            rcol   = j["right_col"]
+            jtable = _safe_name(j["table"])
+            lcol   = _safe_name(j["left_col"])
+            rcol   = _safe_name(j["right_col"])
             join_lines += f'    {jt} JOIN raw."{jtable}" ON "{table}"."{lcol}" = "{jtable}"."{rcol}"\n'
         return (
             f'with cleaned as (\n'
@@ -1691,11 +1691,11 @@ def _generate_agg_sql(clean_model: str, group_by: list[str], metrics: list[dict]
     valid_fns = {"SUM", "COUNT", "AVG", "MIN", "MAX"}
     select_parts = []
     for c in group_by:
-        select_parts.append(f'        "{c}"')
+        select_parts.append(f'        "{_safe_name(c)}"')
     for m in metrics:
         fn  = m.get("fn", "SUM").upper()
-        col = m.get("column", "")
-        out = m.get("output_name", "")
+        col = _safe_name(m.get("column", ""))
+        out = _safe_name(m.get("output_name", "")) if m.get("output_name") else ""
         if fn not in valid_fns:
             fn = "SUM"
         if fn == "COUNT" and col in ("*", ""):
@@ -1708,7 +1708,7 @@ def _generate_agg_sql(clean_model: str, group_by: list[str], metrics: list[dict]
     select_str = ",\n".join(select_parts) or "        *"
     group_str  = ""
     if group_by:
-        group_str = "    GROUP BY " + ", ".join(f'"{c}"' for c in group_by) + "\n"
+        group_str = "    GROUP BY " + ", ".join(f'"{_safe_name(c)}"' for c in group_by) + "\n"
     return (
         f'with source as (\n'
         f'    select * from clean."{clean_model}"\n'  # clean_model == table name
@@ -2732,9 +2732,9 @@ def upload_page() -> str:
 
 
 @app.get("/", response_class=HTMLResponse)
-def portal() -> str:
+def portal() -> HTMLResponse:
     """DataFabrik portal — unified UI for all platform tools."""
-    return _PORTAL_HTML
+    return HTMLResponse(content=_PORTAL_HTML, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/pipelines")
