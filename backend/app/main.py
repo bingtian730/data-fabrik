@@ -925,22 +925,31 @@ function openAllTools() {
 }
 
 // ── Home ────────────────────────────────────────────────────────────────
-async function loadHome() {
+function loadHome() {
   document.getElementById('home-ts').textContent = 'Loading…';
-  try {
-    const [pipes, runs] = await Promise.all([
-      fetch('/api/pipelines').then(r=>r.json()),
-      fetch('/api/runs?limit=8').then(r=>r.json())
-    ]);
-    document.getElementById('stat-total').textContent = pipes.length;
-    document.getElementById('stat-ok').textContent = pipes.filter(p=>p.state==='success').length;
-    document.getElementById('stat-fail').textContent = pipes.filter(p=>p.state==='failed').length;
-    document.getElementById('stat-paused').textContent = pipes.filter(p=>p.state==='paused').length;
-    document.getElementById('home-ts').textContent = 'Updated ' + new Date().toLocaleTimeString();
-    renderHomeRuns(runs);
-  } catch(e) {
-    document.getElementById('home-ts').textContent = 'Error loading data';
-  }
+
+  // Fetch runs independently — renders as soon as it arrives, never blocked by Airflow latency
+  fetch('/api/runs?limit=8')
+    .then(r => r.json())
+    .then(runs => renderHomeRuns(runs))
+    .catch(() => {
+      document.getElementById('home-runs').innerHTML = '<div class="empty">Could not load recent runs.</div>';
+    });
+
+  // Fetch pipeline stats independently
+  fetch('/api/pipelines')
+    .then(r => r.json())
+    .then(pipes => {
+      document.getElementById('stat-total').textContent = pipes.length;
+      document.getElementById('stat-ok').textContent = pipes.filter(p=>p.state==='success').length;
+      document.getElementById('stat-fail').textContent = pipes.filter(p=>p.state==='failed').length;
+      document.getElementById('stat-paused').textContent = pipes.filter(p=>p.state==='paused').length;
+      document.getElementById('home-ts').textContent = 'Updated ' + new Date().toLocaleTimeString();
+    })
+    .catch(() => {
+      document.getElementById('home-ts').textContent = 'Could not reach Airflow';
+    });
+
   checkHealth();
 }
 

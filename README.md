@@ -62,7 +62,20 @@ The full step-by-step is available in the **Pipeline Guide** tab inside the port
 | Airflow | http://localhost:8080 | `admin` / `admin` |
 | MinIO console | http://localhost:9001 | `minioadmin` / `minioadmin` |
 | Metabase | http://localhost:3000 | first-run setup wizard (create your own account) |
-| Postgres | `localhost:5433` | `postgres` / `postgres` |
+| Postgres | `localhost:5433` | see below |
+
+### Postgres databases
+
+Connect with any SQL client (TablePlus, DBeaver, psql):
+
+| Database | User | Password | What it's for |
+|---|---|---|---|
+| **`datafabrik`** | `datafabrik` | `datafabrik` | Your data — `raw`, `clean`, `analytics` schemas |
+| `airflow` | `airflow` | `airflow` | Airflow internal metadata |
+| `metabase` | `datafabrik` | `datafabrik` | Metabase internal metadata |
+| `postgres` | `postgres` | `postgres` | Default system DB |
+
+**The database you want is `datafabrik`** — this is where uploaded CSVs land in `raw`, cleaned data goes into `clean`, and aggregations go into `analytics`.
 
 ## Stop / reset
 
