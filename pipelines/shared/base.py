@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, Any
 
 from airflow import DAG
 from airflow.operators.empty import EmptyOperator
-from airflow.utils.task_group import TaskGroup
 
 if TYPE_CHECKING:
     from airflow.models.baseoperator import BaseOperator
@@ -14,7 +13,7 @@ if TYPE_CHECKING:
     from pipelines.shared.schema import PipelineConfig
 
 
-STAGES: tuple[str, ...] = ("ingestion", "transformation", "validation", "delivery")
+STAGES: tuple[str, ...] = ("ingestion", "transformation")
 
 
 # ── Airflow callback helpers ───────────────────────────────────────────────────
@@ -92,7 +91,7 @@ class BasePipeline(ABC):
         except Exception:
             pass  # non-fatal — DAG must still register
 
-        previous: BaseOperator | TaskGroup | None = None
+        previous: BaseOperator | None = None
         for stage in STAGES:
             node = self._build_stage(stage, dag)
             if previous is not None:
@@ -101,40 +100,9 @@ class BasePipeline(ABC):
 
         return dag
 
-    def _build_stage(self, stage: str, dag: DAG) -> BaseOperator | TaskGroup:
+    def _build_stage(self, stage: str, dag: DAG) -> BaseOperator:
         stage_value = getattr(self.config.stages, stage)
 
-        # Validation: parallel TaskGroup over N rules
-        if stage == "validation":
-            rules = stage_value
-            if not rules:
-                return EmptyOperator(task_id="validation_skipped", dag=dag)
-
-            type_totals: dict[str, int] = {}
-            for r in rules:
-                type_totals[r.type] = type_totals.get(r.type, 0) + 1
-            seen: dict[str, int] = {}
-
-            with TaskGroup(group_id="validation", dag=dag) as tg:
-                for rule in rules:
-                    seen[rule.type] = seen.get(rule.type, 0) + 1
-                    task_id = (
-                        f"{rule.type}_{seen[rule.type]}"
-                        if type_totals[rule.type] > 1
-                        else rule.type
-                    )
-                    builder = self._resolve_task_builder(stage, rule.type)
-                    op = builder(
-                        stage=task_id,
-                        stage_config=rule,
-                        pipeline=self.config,
-                        dag=dag,
-                    )
-                    op.on_success_callback = _task_success
-                    op.on_failure_callback = _task_failure
-            return tg
-
-        # Other stages: optional single operator
         if stage_value is None:
             return EmptyOperator(task_id=f"{stage}_skipped", dag=dag)
 
