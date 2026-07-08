@@ -51,11 +51,11 @@ def sql(
             re.IGNORECASE,
         )
         outputs = [
-            {"database": "datafabrik", "schema": schema, "table": table}
-            for schema, table in view_re.findall(sql_str)
+            {"database": "datafabrik", "schema": schema, "view": view}
+            for schema, view in view_re.findall(sql_str)
         ]
         for o in outputs:
-            print(f"[sql] output → {o['database']}.{o['schema']}.{o['table']}")
+            print(f"[sql] output → {o['database']}.{o['schema']}.{o['view']}")
         print(f"[sql] executed successfully — {len(outputs)} view(s) created")
         return {"outputs": outputs}
 
