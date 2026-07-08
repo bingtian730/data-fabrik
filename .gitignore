@@ -8,12 +8,6 @@ __pycache__/
 airflow/logs/
 airflow/*.db
 
-# Terraform
-.terraform/
-*.tfstate
-*.tfstate.*
-terraform.tfvars
-
 # Airflow pipeline configs (generated at runtime by the wizard)
 orchestration/airflow/configs/pipelines/
 
