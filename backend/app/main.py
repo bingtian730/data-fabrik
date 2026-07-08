@@ -574,6 +574,7 @@ select.form-control{cursor:pointer}
 .guide-node.n2{border-color:#276749}.guide-node.n2 .guide-node-title{color:#68d391}
 .guide-node.n3{border-color:#744210}.guide-node.n3 .guide-node-title{color:#f6ad55}
 .guide-node.n4{border-color:#553c9a}.guide-node.n4 .guide-node-title{color:#b794f4}
+.guide-node.n5{border-color:#276749}.guide-node.n5 .guide-node-title{color:#68d391}
 .guide-arrow{display:flex;flex-direction:column;align-items:center;justify-content:center;width:48px;flex-shrink:0;padding-top:54px}
 .guide-arrow-line{width:100%;height:2px;background:linear-gradient(90deg,#2d3748,#4a5568)}
 .guide-arrow-head{width:0;height:0;border-top:5px solid transparent;border-bottom:5px solid transparent;border-left:7px solid #4a5568;margin-left:-1px}
@@ -751,10 +752,28 @@ select.form-control{cursor:pointer}
           <div class="guide-node-num">Step 4</div>
           <div class="guide-node-icon">🐘</div>
           <div class="guide-node-title">Postgres</div>
-          <div class="guide-node-desc">Cleaned data lands in <code style="font-size:.65rem;background:#1e2535;padding:1px 4px;border-radius:3px">clean.</code> schema; aggregations in <code style="font-size:.65rem;background:#1e2535;padding:1px 4px;border-radius:3px">analytics.</code></div>
+          <div class="guide-node-desc">Cleaned data lands as a view in <code style="font-size:.65rem;background:#1e2535;padding:1px 4px;border-radius:3px">clean.</code> schema for querying</div>
           <div class="guide-node-tags">
             <span class="guide-tag">clean schema</span>
-            <span class="guide-tag">analytics schema</span>
+            <span class="guide-tag">view</span>
+          </div>
+        </div>
+
+        <div class="guide-arrow">
+          <div class="guide-arrow-line"></div>
+          <div class="guide-arrow-head"></div>
+          <div class="guide-arrow-label">exports CSV</div>
+        </div>
+
+        <!-- Step 5: MinIO Clean -->
+        <div class="guide-node n5">
+          <div class="guide-node-num">Step 5</div>
+          <div class="guide-node-icon">🗄️</div>
+          <div class="guide-node-title">MinIO Clean</div>
+          <div class="guide-node-desc">Transformed CSV snapshot written to <code style="font-size:.65rem;background:#1e2535;padding:1px 4px;border-radius:3px">datafabrik-clean</code> bucket</div>
+          <div class="guide-node-tags">
+            <span class="guide-tag">datafabrik-clean</span>
+            <span class="guide-tag">wizard/</span>
           </div>
         </div>
 
