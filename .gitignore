@@ -14,13 +14,6 @@ airflow/*.db
 *.tfstate.*
 terraform.tfvars
 
-# dbt
-target/
-dbt_packages/
-logs/
-.user.yml
-dbt/datafabrik_models/models/acme/
-
 # Airflow pipeline configs (generated at runtime by the wizard)
 orchestration/airflow/configs/pipelines/
 
