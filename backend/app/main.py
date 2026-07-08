@@ -1733,7 +1733,7 @@ async def api_workflow_upload(table: str = Form(...), file: UploadFile = File(..
     placeholders = ", ".join(f":{c}" for c in safe_cols)
     with engine.begin() as conn:
         conn.execute(text("CREATE SCHEMA IF NOT EXISTS raw"))
-        conn.execute(text(f'DROP TABLE IF EXISTS raw."{table_name}"'))
+        conn.execute(text(f'DROP TABLE IF EXISTS raw."{table_name}" CASCADE'))
         conn.execute(text(
             f'CREATE TABLE raw."{table_name}" ({col_defs}, '
             f'uploaded_at TIMESTAMPTZ DEFAULT now())'
@@ -2719,7 +2719,7 @@ async def api_upload_csv(table: str = Form(...), file: UploadFile = File(...)) -
     placeholders = ", ".join(f":{c}" for c in cols)
     with engine.begin() as conn:
         conn.execute(text("CREATE SCHEMA IF NOT EXISTS raw"))
-        conn.execute(text(f'DROP TABLE IF EXISTS raw."{table_name}"'))
+        conn.execute(text(f'DROP TABLE IF EXISTS raw."{table_name}" CASCADE'))
         conn.execute(text(
             f'CREATE TABLE raw."{table_name}" ({col_defs}, '
             f'uploaded_at TIMESTAMPTZ DEFAULT now())'
