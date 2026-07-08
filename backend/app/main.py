@@ -967,7 +967,7 @@ function renderPipelines(pipes) {
     const isPaused = p.state === 'paused';
     const isRunning = p.state === 'running';
     return `<tr id="pipe-row-${p.id}">
-      <td><strong>${p.id}</strong></td>
+      <td><a href="#" onclick="nav('airflow');document.getElementById('frame-airflow').src='/tools/airflow/dags/${p.id}/grid';return false;" style="color:#90cdf4;text-decoration:none;font-weight:700" title="Open in Airflow">${p.id}</a></td>
       <td>${badge(p.state)}</td>
       <td class="dim">${p.last_run}</td>
       <td class="dim">${p.duration}</td>
