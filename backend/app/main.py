@@ -290,8 +290,6 @@ _RESTART_CONTAINERS = [
 _HEALTH_CHECKS: dict[str, str] = {
     "airflow":  f"{AIRFLOW_URL}/health",
     "minio":    "http://minio:9000/minio/health/live",
-    "metabase": "http://metabase:3000/api/health",
-    "presto":   "http://presto:8080/v1/info",
 }
 
 
@@ -599,15 +597,9 @@ select.form-control{cursor:pointer}
     <button class="nav-btn active" onclick="nav('home')" id="nav-home">
       <span class="icon">🏠</span> Home
     </button>
-    <button class="nav-btn" onclick="nav('pipelines')" id="nav-pipelines">
-      <span class="icon">📋</span> Pipelines
-    </button>
     <div class="sb-section">Tools</div>
     <button class="nav-btn" onclick="nav('airflow')" id="nav-airflow">
       <span class="icon">✈️</span> Airflow
-    </button>
-    <button class="nav-btn" onclick="nav('metabase')" id="nav-metabase">
-      <span class="icon">📊</span> Metabase
     </button>
     <button class="nav-btn" onclick="nav('minio')" id="nav-minio">
       <span class="icon">🗄️</span> MinIO
@@ -615,9 +607,6 @@ select.form-control{cursor:pointer}
     <div class="sb-section">Build</div>
     <button class="nav-btn" onclick="nav('workflow')" id="nav-workflow">
       <span class="icon">🧹</span> Workflow Wizard
-    </button>
-    <button class="nav-btn" onclick="nav('manage')" id="nav-manage">
-      <span class="icon">⚙️</span> Manage Pipelines
     </button>
     <div class="sb-section">Learn</div>
     <button class="nav-btn" onclick="nav('guide')" id="nav-guide">
@@ -651,31 +640,13 @@ select.form-control{cursor:pointer}
         <div class="svc-card"><span class="svc-dot" id="dot-postgres"></span><span class="svc-name">Postgres</span><span class="svc-status-txt" id="status-postgres">—</span><div class="svc-bar"><div class="svc-bar-fill" id="barfill-postgres"></div></div></div>
         <div class="svc-card"><span class="svc-dot" id="dot-airflow"></span><span class="svc-name">Airflow</span><span class="svc-status-txt" id="status-airflow">—</span><div class="svc-bar"><div class="svc-bar-fill" id="barfill-airflow"></div></div></div>
         <div class="svc-card"><span class="svc-dot" id="dot-minio"></span><span class="svc-name">MinIO</span><span class="svc-status-txt" id="status-minio">—</span><div class="svc-bar"><div class="svc-bar-fill" id="barfill-minio"></div></div></div>
-        <div class="svc-card"><span class="svc-dot" id="dot-metabase"></span><span class="svc-name">Metabase</span><span class="svc-status-txt" id="status-metabase">—</span><div class="svc-bar"><div class="svc-bar-fill" id="barfill-metabase"></div></div></div>
-        <div class="svc-card"><span class="svc-dot" id="dot-presto"></span><span class="svc-name">Presto</span><span class="svc-status-txt" id="status-presto">—</span><div class="svc-bar"><div class="svc-bar-fill" id="barfill-presto"></div></div></div>
       </div>
-      <h3 style="font-size:.85rem;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px">Quick Access</h3>
-      <div class="qlinks">
-        <a class="qlink" href="#" onclick="nav('pipelines');return false"><span class="ql-icon">📋</span> Pipelines</a>
-        <a class="qlink" href="/tools/airflow" target="_blank"><span class="ql-icon">✈️</span> Airflow ↗</a>
-        <a class="qlink" href="http://localhost:3000" target="_blank"><span class="ql-icon">📊</span> Metabase ↗</a>
-        <a class="qlink" href="http://localhost:9001" target="_blank"><span class="ql-icon">🗄️</span> MinIO ↗</a>
-        <a class="qlink" href="/dashboard" target="_blank"><span class="ql-icon">🖥️</span> Health Dashboard ↗</a>
-      </div>
-      <h3 style="font-size:.85rem;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px">Recent Runs</h3>
-      <div id="home-runs"><div class="loading"><span class="spinner"></span> Loading…</div></div>
-    </div>
-  </div>
-
-  <!-- PIPELINES -->
-  <div id="sec-pipelines" class="section">
-    <div class="sec-header">
-      <h2>Pipelines</h2>
-      <button class="btn btn-ghost btn-sm" onclick="loadPipelines()">↻ Refresh</button>
-      <span class="sub" id="pipes-ts"></span>
-    </div>
-    <div class="sec-body">
+      <h3 style="font-size:.85rem;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px">Pipelines
+        <span style="font-weight:400;font-size:.75rem;color:#4a5568;margin-left:8px;text-transform:none;letter-spacing:0" id="pipes-ts"></span>
+      </h3>
       <div id="pipes-content"><div class="loading"><span class="spinner"></span> Loading…</div></div>
+      <h3 style="font-size:.85rem;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin:20px 0 12px">Recent Runs</h3>
+      <div id="home-runs"><div class="loading"><span class="spinner"></span> Loading…</div></div>
     </div>
   </div>
 
@@ -690,16 +661,6 @@ select.form-control{cursor:pointer}
     </div>
   </div>
 
-  <!-- METABASE -->
-  <div id="sec-metabase" class="section iframe-section">
-    <div class="iframe-bar">
-      <span>📊 Metabase — Dashboards &amp; analytics &nbsp;·&nbsp; <code style="font-size:.78rem">admin / admin</code></span>
-      <a href="http://localhost:3000" target="_blank">Open in new tab ↗</a>
-    </div>
-    <div class="iframe-wrap">
-      <iframe id="frame-metabase" title="Metabase" allowfullscreen></iframe>
-    </div>
-  </div>
 
   <!-- MINIO -->
   <div id="sec-minio" class="section iframe-section">
@@ -719,16 +680,6 @@ select.form-control{cursor:pointer}
     </div>
     <div class="iframe-wrap">
       <iframe id="frame-workflow" title="Workflow Wizard" allowfullscreen></iframe>
-    </div>
-  </div>
-
-  <!-- MANAGE PIPELINES -->
-  <div id="sec-manage" class="section iframe-section">
-    <div class="iframe-bar">
-      <span>🗑️ Manage Pipelines — delete generated pipeline configs and Airflow DAGs</span>
-    </div>
-    <div class="iframe-wrap">
-      <iframe id="frame-manage" title="Manage Pipelines" allowfullscreen></iframe>
     </div>
   </div>
 
@@ -816,9 +767,9 @@ select.form-control{cursor:pointer}
 
 <script>
 // ── Navigation ──────────────────────────────────────────────────────────
-const SECTIONS = ['home','pipelines','airflow','metabase','minio','workflow','manage','guide'];
-const IFRAMES  = {airflow:'/tools/airflow', metabase:'http://localhost:3001', minio:'http://localhost:9002',
-                  workflow:'/workflow?embed=1', manage:'/manage?embed=1'};
+const SECTIONS = ['home','airflow','minio','workflow','guide'];
+const IFRAMES  = {airflow:'/tools/airflow', minio:'http://localhost:9002',
+                  workflow:'/workflow?embed=1'};
 // Airflow is proxied via nginx on :8082 which strips X-Frame-Options
 const iframeLoaded = {};
 
@@ -831,7 +782,6 @@ function nav(id) {
     document.getElementById('frame-'+id).src = IFRAMES[id];
     iframeLoaded[id] = true;
   }
-  if (id === 'pipelines') loadPipelines();
   if (id === 'home') loadHome();
 }
 
@@ -845,7 +795,7 @@ function toast(msg, type='ok') {
 }
 
 // ── Admin / Services ─────────────────────────────────────────────────────
-const _SVC_NAMES = ['postgres','airflow','minio','metabase','presto'];
+const _SVC_NAMES = ['postgres','airflow','minio'];
 
 async function checkHealth() {
   const btn = document.getElementById('health-btn');
@@ -936,36 +886,18 @@ async function pollAirflowReady(attempt) {
 function openAllTools() {
   window.open('/tools/airflow', '_blank');
   window.open('/tools/minio', '_blank');
-  window.open('http://localhost:3000', '_blank');
   toast('Opening tools — signing in automatically…');
 }
 
 // ── Home ────────────────────────────────────────────────────────────────
 function loadHome() {
-  document.getElementById('home-ts').textContent = 'Loading…';
-
-  // Fetch runs independently — renders as soon as it arrives, never blocked by Airflow latency
   fetch('/api/runs?limit=8')
     .then(r => r.json())
     .then(runs => renderHomeRuns(runs))
     .catch(() => {
       document.getElementById('home-runs').innerHTML = '<div class="empty">Could not load recent runs.</div>';
     });
-
-  // Fetch pipeline stats independently
-  fetch('/api/pipelines')
-    .then(r => r.json())
-    .then(pipes => {
-      document.getElementById('stat-total').textContent = pipes.length;
-      document.getElementById('stat-ok').textContent = pipes.filter(p=>p.state==='success').length;
-      document.getElementById('stat-fail').textContent = pipes.filter(p=>p.state==='failed').length;
-      document.getElementById('stat-paused').textContent = pipes.filter(p=>p.state==='paused').length;
-      document.getElementById('home-ts').textContent = 'Updated ' + new Date().toLocaleTimeString();
-    })
-    .catch(() => {
-      document.getElementById('home-ts').textContent = 'Could not reach Airflow';
-    });
-
+  loadPipelines();
   checkHealth();
 }
 
@@ -988,10 +920,15 @@ async function loadPipelines() {
   document.getElementById('pipes-ts').textContent = '';
   try {
     const pipes = await fetch('/api/pipelines').then(r=>r.json());
+    document.getElementById('stat-total').textContent = pipes.length;
+    document.getElementById('stat-ok').textContent = pipes.filter(p=>p.state==='success').length;
+    document.getElementById('stat-fail').textContent = pipes.filter(p=>p.state==='failed').length;
+    document.getElementById('stat-paused').textContent = pipes.filter(p=>p.state==='paused').length;
     renderPipelines(pipes);
     document.getElementById('pipes-ts').textContent = 'Updated ' + new Date().toLocaleTimeString();
   } catch(e) {
     document.getElementById('pipes-content').innerHTML = '<div class="empty">Failed to load pipelines: ' + e.message + '</div>';
+    document.getElementById('pipes-ts').textContent = 'Could not reach Airflow';
   }
 }
 
@@ -1638,7 +1575,7 @@ def _generate_clean_sql(table: str, columns: list, filters: list, joins: list = 
     select_str = ",\n".join(select_parts) or "        *"
     where_str  = ""
     if where_parts:
-        where_str = "    WHERE " + "\n      AND ".join(where_parts) + "\n"
+        where_str = "WHERE " + "\n  AND ".join(where_parts) + "\n"
 
     if has_joins:
         join_lines = ""
@@ -1654,9 +1591,9 @@ def _generate_clean_sql(table: str, columns: list, filters: list, joins: list = 
             f'{select_str}\n'
             f'    from raw."{table}"\n'
             f'{join_lines}'
-            f'{where_str}'
             f')\n'
             f'select * from cleaned\n'
+            f'{where_str}'
         )
     return (
         f'with source as (\n'
@@ -1666,9 +1603,9 @@ def _generate_clean_sql(table: str, columns: list, filters: list, joins: list = 
         f'    select\n'
         f'{select_str}\n'
         f'    from source\n'
-        f'{where_str}'
         f')\n'
         f'select * from cleaned\n'
+        f'{where_str}'
     )
 
 
@@ -1866,13 +1803,15 @@ def api_preview_sql(payload: _ProcessPayload) -> dict:
             [j.model_dump() for j in tbl_cfg.joins],
             [cc.model_dump() for cc in tbl_cfg.computed_cols],
         )
-        sql_parts.append(f'CREATE OR REPLACE VIEW clean."{table}" AS\n{clean_sql};')
+        sql_parts.append(f'DROP VIEW IF EXISTS clean."{table}" CASCADE;')
+        sql_parts.append(f'CREATE VIEW clean."{table}" AS\n{clean_sql};')
         if tbl_cfg.metrics:
             agg_sql = _generate_agg_sql(
                 table, tbl_cfg.group_by, [m.model_dump() for m in tbl_cfg.metrics]
             )
+            sql_parts.append(f'DROP VIEW IF EXISTS analytics."{table}" CASCADE;')
             sql_parts.append(
-                f'CREATE OR REPLACE VIEW analytics."{table}" AS\n{agg_sql};'
+                f'CREATE VIEW analytics."{table}" AS\n{agg_sql};'
             )
 
     return {"sql": "\n".join(sql_parts) + "\n"}
@@ -1904,15 +1843,17 @@ def api_process(payload: _ProcessPayload) -> dict:
             [j.model_dump() for j in tbl_cfg.joins],
             [cc.model_dump() for cc in tbl_cfg.computed_cols],
         )
-        sql_parts.append(f'CREATE OR REPLACE VIEW clean."{table}" AS\n{clean_sql};')
+        sql_parts.append(f'DROP VIEW IF EXISTS clean."{table}" CASCADE;')
+        sql_parts.append(f'CREATE VIEW clean."{table}" AS\n{clean_sql};')
 
         agg_view = None
         if tbl_cfg.metrics:
             agg_sql = _generate_agg_sql(
                 table, tbl_cfg.group_by, [m.model_dump() for m in tbl_cfg.metrics]
             )
+            sql_parts.append(f'DROP VIEW IF EXISTS analytics."{table}" CASCADE;')
             sql_parts.append(
-                f'CREATE OR REPLACE VIEW analytics."{table}" AS\n{agg_sql};'
+                f'CREATE VIEW analytics."{table}" AS\n{agg_sql};'
             )
             agg_view = f'analytics."{table}"'
 
@@ -2251,9 +2192,7 @@ _WORKFLOW_HTML = (
     '<div class="si-sep"></div>'
     '<div class="si" id="si2"><div class="si-circle">2</div>Pipeline Builder</div>'
     '<div class="si-sep"></div>'
-    '<div class="si" id="si3"><div class="si-circle">3</div>SQL Editor</div>'
-    '<div class="si-sep"></div>'
-    '<div class="si" id="si4"><div class="si-circle">4</div>Results</div>'
+    '<div class="si" id="si3"><div class="si-circle">3</div>Results</div>'
     '</div>'
     '<div id="p1" class="panel active">'
     '<iframe id="upload-frame" src="/upload?embed=1"'
@@ -2271,30 +2210,11 @@ _WORKFLOW_HTML = (
     '<div id="tables-container"></div>'
     '<div class="panel-footer">'
     '<button class="btn btn-ghost" onclick="goStep(1)">&#8592; Back</button>'
-    '<button class="btn btn-primary" id="s2-btn" onclick="previewSql()">Preview SQL &#8594;</button>'
+    '<button class="btn btn-primary" id="s2-btn" onclick="doProcess()">Process &amp; Load &#8594;</button>'
     '<div id="s2-status"></div>'
     '</div>'
     '</div>'
     '<div id="p3" class="panel">'
-    '<div class="panel-head"><h2>SQL Editor</h2>'
-    '<p>Review or edit the SQL before building. The pipeline runs exactly this SQL against your raw data in Postgres.</p></div>'
-    '<div class="card" style="padding:16px 20px">'
-    '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">'
-    '<span style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#718096">SQL — edit freely or leave as generated</span>'
-    '<button class="btn-link" onclick="resetSql()">&#8635; Reset to generated</button>'
-    '</div>'
-    '<textarea id="sql-editor" spellcheck="false"'
-    ' style="width:100%;height:320px;background:#0d1117;border:1px solid #2d3748;border-radius:8px;'
-    'padding:14px;color:#68d391;font-family:monospace;font-size:.8rem;resize:vertical;outline:none;line-height:1.6;tab-size:2">'
-    '</textarea>'
-    '</div>'
-    '<div class="panel-footer">'
-    '<button class="btn btn-ghost" onclick="goStep(2)">&#8592; Back</button>'
-    '<button class="btn btn-primary" id="s3-btn" onclick="doProcess()">Build Pipeline &#8594;</button>'
-    '<div id="s3-status"></div>'
-    '</div>'
-    '</div>'
-    '<div id="p4" class="panel">'
     '<div class="card">'
     '<div class="success-block"><span class="s-icon">&#9989;</span><h2>Pipeline Triggered!</h2></div>'
     '<div id="r-pipelines"></div>'
@@ -2303,13 +2223,10 @@ _WORKFLOW_HTML = (
     '<div style="font-weight:700;color:#e2e8f0;margin-bottom:10px">What happens next</div>'
     '<div>&#9312; Airflow creates a <code style="color:#63b3ed">clean.*</code> view for each table from <code style="color:#63b3ed">raw.*</code></div>'
     '<div>&#9313; If you enabled aggregation, <code style="color:#63b3ed">analytics.*</code> views are also created</div>'
-    '<div style="margin-top:8px">&#9314; Open Metabase and connect to the <code style="color:#63b3ed">datafabrik</code> database to query the views</div>'
-    '</div>'
-    '<div style="text-align:center;margin-top:16px">'
-    '<a class="btn btn-primary" href="http://localhost:3001" target="_blank">Open Metabase &#8599;</a>'
+    '<div style="margin-top:8px">&#9314; Query the views from any SQL client — connect to the <code style="color:#63b3ed">datafabrik</code> database on <code style="color:#63b3ed">localhost:5433</code></div>'
     '</div>'
     '<div class="panel-footer" style="justify-content:center;gap:12px;padding-top:16px;border-top:1px solid #2d3748;margin-top:16px">'
-    '<button class="btn btn-ghost" onclick="goStep(3)">&#8592; Back</button>'
+    '<button class="btn btn-ghost" onclick="goStep(2)">&#8592; Back</button>'
     '<button class="btn btn-primary" onclick="resetWizard()">&#10003; Complete</button>'
     '</div>'
     '</div>'
@@ -2320,7 +2237,7 @@ _WORKFLOW_HTML = (
     'const OPS=[["=","equals"],["!=","not equals"],[">=",">="],["<=","<="],["LIKE","contains"],["IS NULL","is empty"],["IS NOT NULL","not empty"]];'
     'const JOIN_TYPES=["LEFT","INNER","RIGHT"];'
     'const FNS=["SUM","COUNT","AVG","MIN","MAX"];'
-    'let state={uploadedTables:[],rawTables:{},generatedSql:"",lastTables:[]};'
+    'let state={uploadedTables:[],rawTables:{}};'
     'let seqs={};'
     'function nextSeq(i,t){if(!seqs[i])seqs[i]={};if(!seqs[i][t])seqs[i][t]=0;return++seqs[i][t];}'
     'window.addEventListener("message",function(e){'
@@ -2348,7 +2265,7 @@ _WORKFLOW_HTML = (
     'function goStep(n){'
     'document.querySelectorAll(".panel").forEach(p=>p.classList.remove("active"));'
     'document.getElementById(`p${n}`).classList.add("active");'
-    '["si1","si2","si3","si4"].forEach((id,i)=>{'
+    '["si1","si2","si3"].forEach((id,i)=>{'
     'const el=document.getElementById(id);'
     'if(el)el.className="si"+(i+1<n?" done":i+1===n?" active":"");});'
     'if(n===1){document.getElementById("s1-continue").style.display="none";const fr=document.getElementById("upload-frame");if(fr)fr.src="/upload?embed=1";}'
@@ -2518,7 +2435,7 @@ _WORKFLOW_HTML = (
     'const has=document.querySelectorAll(`#ml-${idx} .metric-row`).length>0;'
     'document.getElementById(`nm-${idx}`).style.display=has?"none":"";'
     'document.getElementById(`mh-${idx}`).style.display=has?"grid":"none";}'
-    'function collectTables(){'
+    'async function doProcess(){'
     'const tables=[];'
     'document.querySelectorAll(".ts-card").forEach(card=>{'
     'const idx=parseInt(card.dataset.tsIdx);'
@@ -2554,43 +2471,16 @@ _WORKFLOW_HTML = (
     'const ss=r.querySelectorAll("select");'
     'mx.push({column:ss[0].value,fn:ss[1].value,output_name:r.querySelector("input[type=text]").value.trim()});});}'
     'tables.push({table:tblName,columns:cols,filters,computed_cols,joins,group_by:gb,metrics:mx});});'
-    'return tables;}'
-    'async function previewSql(){'
-    'const tables=collectTables();'
     'if(!tables.length){document.getElementById("s2-status").innerHTML=\'<span class="err-msg">No tables</span>\';return;}'
-    'state.lastTables=tables;'
     'const btn=document.getElementById("s2-btn");'
     'const st=document.getElementById("s2-status");'
     'btn.disabled=true;'
-    'st.innerHTML="<div class=\\"spin-wrap\\"><div class=\\"spinner\\"></div>&nbsp;Generating SQL…</div>";'
-    'try{'
-    'const r=await fetch("/api/workflow/preview-sql",{method:"POST",headers:{"Content-Type":"application/json"},'
-    'body:JSON.stringify({tables})});'
-    'const j=await r.json();'
-    'if(r.ok){'
-    'state.generatedSql=j.sql;'
-    'document.getElementById("sql-editor").value=j.sql;'
-    'goStep(3);'
-    '}else{'
-    'const det=j&&j.detail;'
-    'const msg=typeof det==="string"?det:det?JSON.stringify(det):"Preview failed";'
-    'st.innerHTML=\'<span class="err-msg">\'+msg+\'</span>\';'
-    'btn.disabled=false;}'
-    '}catch(e){st.innerHTML="<span class=\\"err-msg\\">Network error</span>";btn.disabled=false;}}'
-    'function resetSql(){document.getElementById("sql-editor").value=state.generatedSql||"";}'
-    'async function doProcess(){'
-    'const tables=state.lastTables;'
-    'const customSql=document.getElementById("sql-editor").value.trim();'
-    'if(!tables||!tables.length){document.getElementById("s3-status").innerHTML=\'<span class="err-msg">No tables — go back to Pipeline Builder</span>\';return;}'
-    'const btn=document.getElementById("s3-btn");'
-    'const st=document.getElementById("s3-status");'
-    'btn.disabled=true;'
-    'st.innerHTML="<div class=\\"spin-wrap\\"><div class=\\"spinner\\"></div>&nbsp;Building pipeline…</div>";'
+    'st.innerHTML="<div class=\\"spin-wrap\\"><div class=\\"spinner\\"></div>&nbsp;Creating pipeline…</div>";'
     'try{'
     'const r=await fetch("/api/workflow/process",{method:"POST",headers:{"Content-Type":"application/json"},'
-    'body:JSON.stringify({tables,custom_sql:customSql})});'
+    'body:JSON.stringify({tables})});'
     'const j=await r.json();'
-    'if(r.ok){renderResults(j);goStep(4);}'
+    'if(r.ok){renderResults(j);goStep(3);}'
     'else{'
     'const det=j&&j.detail;'
     'const msg=typeof det==="string"?det:det?JSON.stringify(det):"Processing failed";'
@@ -2610,7 +2500,7 @@ _WORKFLOW_HTML = (
     '`</div>`;}'
     'document.getElementById("r-pipelines").innerHTML=html;}'
     'function resetWizard(){'
-    'state={uploadedTables:[],rawTables:{},generatedSql:"",lastTables:[]};seqs={};'
+    'state={uploadedTables:[],rawTables:{}};seqs={};'
     'document.getElementById("r-pipelines").innerHTML="";'
     'document.getElementById("tables-container").innerHTML="";'
     'goStep(1);}'

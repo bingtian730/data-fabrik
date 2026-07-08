@@ -130,21 +130,6 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
-  presto:
-    image: prestodb/presto:0.289
-    container_name: datafabrik-presto
-    ports:
-      - "8081:8080"
-    volumes:
-      - ./infra/docker/presto/catalog:/opt/presto-server/etc/catalog:ro
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8080/v1/info"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
-      start_period: 30s
-    restart: unless-stopped
-
   fastapi:
     build:
       context: .
@@ -161,8 +146,6 @@ services:
       S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      PRESTO_HOST: presto
-      PRESTO_PORT: "8080"
       AIRFLOW_URL: http://airflow-webserver:8080
       AIRFLOW_USER: ${AIRFLOW_USER:-admin}
       AIRFLOW_PASSWORD: ${AIRFLOW_PASSWORD:-admin}
@@ -181,37 +164,12 @@ services:
     image: nginx:alpine
     container_name: datafabrik-nginx-proxy
     ports:
-      - "3001:3001"
       - "8082:8082"
       - "9002:9002"
     volumes:
       - ./infra/docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
-      - metabase
       - minio
-    restart: unless-stopped
-
-  metabase:
-    image: metabase/metabase:v0.51.5
-    container_name: datafabrik-metabase
-    ports:
-      - "3000:3000"
-    environment:
-      MB_DB_TYPE: postgres
-      MB_DB_DBNAME: metabase
-      MB_DB_PORT: 5432
-      MB_DB_USER: datafabrik
-      MB_DB_PASS: datafabrik
-      MB_DB_HOST: postgres
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:3000/api/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 90s
     restart: unless-stopped
 
 volumes:

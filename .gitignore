@@ -27,3 +27,6 @@ orchestration/airflow/configs/pipelines/
 # IDE
 .vscode/
 .idea/
+
+# Docs (local only)
+docs/
