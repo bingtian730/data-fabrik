@@ -160,6 +160,18 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: datafabrik-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      fastapi:
+        condition: service_healthy
+    restart: unless-stopped
+
   nginx-proxy:
     image: nginx:alpine
     container_name: datafabrik-nginx-proxy
