@@ -1,6 +1,16 @@
 # DataFabrik
 
-A local data platform that runs entirely in Docker. Upload a CSV, build a cleaning pipeline, and query results in Postgres — all from a single browser tab.
+A local data-cleaning platform that runs entirely in Docker. Upload a CSV, build a cleaning pipeline through a point-and-click UI (filters, joins, computed columns, aggregation), and query the result in Postgres — no notebook, no cloud account, no code required.
+
+![Pipeline Builder — filters, computed columns, joins, and aggregation on an uploaded CSV](.github/images/pipeline-builder.png)
+
+## Why
+
+Cleaning a CSV usually means either wrestling with `pandas`/Excel by hand, or standing up a real data stack just to answer one question. DataFabrik gives you the middle ground: a wizard-driven cleaning UI backed by real Postgres views and a real Airflow pipeline, running entirely on your laptop.
+
+- **Point-and-click cleaning** — pick columns/types, add `WHERE` filters, write computed-column expressions, join across uploaded tables, group & aggregate — no SQL required (though it's all generated as real SQL you can inspect).
+- **Real orchestration, not a toy** — every pipeline you build is an actual Airflow DAG, so you get retries, run history, and a grid view for free.
+- **Query the output anywhere** — cleaned data lands as a Postgres view; connect with any SQL client.
 
 ## What's included
 
