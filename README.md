@@ -6,8 +6,7 @@ A local data platform that runs entirely in Docker. Upload a CSV, build a cleani
 
 | Service | Purpose |
 |---|---|
-| **App** (React + nginx) | Browser UI — workflow wizard, pipeline monitor, guide |
-| **API** (FastAPI) | Backend — upload, pipeline management, health checks |
+| **Portal** (FastAPI) | Central UI — pipeline wizard, monitoring, guide |
 | **Airflow** | Pipeline orchestration and scheduling |
 | **MinIO** | Local S3-compatible object storage |
 | **Postgres** | Data warehouse (`raw`, `clean`, `analytics` schemas) |
@@ -40,7 +39,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-4. Open **http://localhost:3000** once containers are up (~3–5 min on first run)
+4. Open **http://localhost:8000** once containers are up (~3–5 min on first run)
 
 ## How it works
 
@@ -66,7 +65,7 @@ The full step-by-step is available in the **Pipeline Guide** tab inside the port
 
 | Service | URL | Credentials |
 |---|---|---|
-| **App** | http://localhost:3000 | — |
+| **Portal** | http://localhost:8000 | — |
 | Airflow | http://localhost:8080 | `admin` / `admin` |
 | MinIO console | http://localhost:9001 | `minioadmin` / `minioadmin` |
 | Postgres | `localhost:5433` | see below |
