@@ -1,16 +1,16 @@
 # DataFabrik
 
-A local data platform that runs entirely in Docker. Upload a CSV, build a cleaning pipeline, and query results in Postgres — all from a single browser-based portal.
+A local data platform that runs entirely in Docker. Upload a CSV, build a cleaning pipeline, and query results in Postgres — all from a single browser tab.
 
 ## What's included
 
 | Service | Purpose |
 |---|---|
-| **Portal** (FastAPI) | Central UI — pipeline wizard, monitoring, guide |
+| **App** (React + nginx) | Browser UI — workflow wizard, pipeline monitor, guide |
+| **API** (FastAPI) | Backend — upload, pipeline management, health checks |
 | **Airflow** | Pipeline orchestration and scheduling |
 | **MinIO** | Local S3-compatible object storage |
 | **Postgres** | Data warehouse (`raw`, `clean`, `analytics` schemas) |
-| **Metabase** | Dashboards and SQL exploration |
 
 ## Requirements
 
@@ -40,7 +40,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-4. Open **http://localhost:8000** once containers are up (~3 min on first run)
+4. Open **http://localhost:3000** once containers are up (~3–5 min on first run)
 
 ## How it works
 
@@ -58,10 +58,9 @@ The full step-by-step is available in the **Pipeline Guide** tab inside the port
 
 | Service | URL | Credentials |
 |---|---|---|
-| **Portal** | http://localhost:8000 | — |
+| **App** | http://localhost:3000 | — |
 | Airflow | http://localhost:8080 | `admin` / `admin` |
 | MinIO console | http://localhost:9001 | `minioadmin` / `minioadmin` |
-| Metabase | http://localhost:3000 | first-run setup wizard (create your own account) |
 | Postgres | `localhost:5433` | see below |
 
 ### Postgres databases
@@ -72,7 +71,6 @@ Connect with any SQL client (TablePlus, DBeaver, psql):
 |---|---|---|---|
 | **`datafabrik`** | `datafabrik` | `datafabrik` | Your data — `raw`, `clean`, `analytics` schemas |
 | `airflow` | `airflow` | `airflow` | Airflow internal metadata |
-| `metabase` | `datafabrik` | `datafabrik` | Metabase internal metadata |
 | `postgres` | `postgres` | `postgres` | Default system DB |
 
 **The database you want is `datafabrik`** — this is where uploaded CSVs land in `raw`, cleaned data goes into `clean`, and aggregations go into `analytics`.
