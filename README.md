@@ -15,9 +15,9 @@ A local data platform that runs entirely in Docker. Upload a CSV, build a cleani
 ## Requirements
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop) 4.30+ (Mac or Windows with WSL2, or Linux with Docker Engine 24+)
-- ~6 GB free RAM
+- ~4 GB free RAM
 
-> **No other installs needed.** Postgres, Airflow, MinIO, and Metabase all run as Docker containers — nothing is installed on your machine outside of Docker.
+> **No other installs needed.** Postgres, Airflow, and MinIO all run as Docker containers — nothing is installed on your machine outside of Docker.
 
 ## Download & run
 
@@ -45,12 +45,20 @@ docker compose up -d --build
 ## How it works
 
 ```
-📄 Upload CSV           →    🗄️ MinIO Storage
-                                    ↓
-                             ✈️ Airflow Pipeline
-                                    ↓
-                             🐘 Postgres  (clean · analytics schemas)
+📄 Upload CSV
+      ↓
+🗄️  MinIO  (datafabrik-raw)      ← raw CSV stored here
+      ↓
+✈️  Airflow Pipeline              ← DAG triggered automatically
+      ↓              ↓
+🐘  Postgres        🗄️  MinIO (datafabrik-clean)
+   clean schema        ← transformed CSV snapshot exported here
+   (SQL view)
 ```
+
+1. **Upload** a CSV in the Workflow Wizard — rows are sampled into `raw.<table>` in Postgres and the file is stored in the `datafabrik-raw` MinIO bucket.
+2. **Build** a pipeline — choose columns, types, filters, joins, and aggregations. A SQL transformation is generated automatically.
+3. **Run** — Airflow executes the pipeline: it creates a `clean.<table>` view in Postgres and exports a CSV snapshot to the `datafabrik-clean` MinIO bucket.
 
 The full step-by-step is available in the **Pipeline Guide** tab inside the portal.
 
@@ -69,11 +77,18 @@ Connect with any SQL client (TablePlus, DBeaver, psql):
 
 | Database | User | Password | What it's for |
 |---|---|---|---|
-| **`datafabrik`** | `datafabrik` | `datafabrik` | Your data — `raw`, `clean`, `analytics` schemas |
+| **`datafabrik`** | `datafabrik` | `datafabrik` | Your data — `raw` and `clean` schemas |
 | `airflow` | `airflow` | `airflow` | Airflow internal metadata |
 | `postgres` | `postgres` | `postgres` | Default system DB |
 
-**The database you want is `datafabrik`** — this is where uploaded CSVs land in `raw`, cleaned data goes into `clean`, and aggregations go into `analytics`.
+**The database you want is `datafabrik`** — uploaded CSVs land in `raw.<table>` and cleaned views are created in `clean.<table>`.
+
+### MinIO buckets
+
+| Bucket | What it contains |
+|---|---|
+| `datafabrik-raw` | Original CSV uploads (`wizard/<table>/`) |
+| `datafabrik-clean` | Transformed CSV snapshots after each pipeline run |
 
 ## Stop / reset
 

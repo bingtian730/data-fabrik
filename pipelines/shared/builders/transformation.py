@@ -26,9 +26,14 @@ def sql(
     dag: DAG,
 ) -> BaseOperator:
     def _run(**_):
+        import csv
+        import io
         import os
         import re
+        from datetime import datetime, timezone
         from pathlib import Path
+
+        import boto3
         from sqlalchemy import create_engine, text as sa_text
 
         if stage_config.sql:
@@ -54,8 +59,36 @@ def sql(
             {"database": "datafabrik", "schema": schema, "view": view}
             for schema, view in view_re.findall(sql_str)
         ]
-        for o in outputs:
-            print(f"[sql] output → {o['database']}.{o['schema']}.{o['view']}")
+
+        # Export each clean view to MinIO
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=os.environ.get("AWS_ENDPOINT_URL"),
+            aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+        )
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        clean_bucket = "datafabrik-clean"
+
+        with eng.connect() as conn:
+            for o in outputs:
+                result = conn.execute(sa_text(f'SELECT * FROM "{o["schema"]}"."{o["view"]}"'))
+                rows = result.fetchall()
+                buf = io.StringIO()
+                writer = csv.writer(buf)
+                writer.writerow(result.keys())
+                writer.writerows(rows)
+                s3_key = f"wizard/{o['view']}/{o['view']}_{ts}.csv"
+                s3.put_object(
+                    Bucket=clean_bucket,
+                    Key=s3_key,
+                    Body=buf.getvalue().encode("utf-8"),
+                    ContentType="text/csv",
+                )
+                o["s3_bucket"] = clean_bucket
+                o["s3_key"] = s3_key
+                print(f"[sql] exported {o['schema']}.{o['view']} → s3://{clean_bucket}/{s3_key} ({len(rows)} rows)")
+
         print(f"[sql] executed successfully — {len(outputs)} view(s) created")
         return {"outputs": outputs}
 

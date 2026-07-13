@@ -365,7 +365,7 @@ _RELAY_CSS = (
 
 
 @app.get("/tools/airflow", response_class=HTMLResponse)
-def tool_airflow() -> HTMLResponse:
+def tool_airflow(next: str = "/home") -> HTMLResponse:
     """
     Auto-login relay for Airflow.
 
@@ -373,8 +373,8 @@ def tool_airflow() -> HTMLResponse:
     scope).  We fetch Airflow's login page server-side to get a valid
     session cookie + CSRF token, then forward the session cookie to the
     browser and embed the CSRF token in an auto-submit form.  When the
-    browser POSTs to localhost:8080/login/ it already holds the matching
-    session, so Airflow's CSRF check passes.
+    browser POSTs to localhost:8082/login/?next=<next> it redirects there
+    after a successful login.
     """
     import re as _re2
     csrf_token = ""
@@ -388,12 +388,14 @@ def tool_airflow() -> HTMLResponse:
     except Exception:
         pass  # fall through — form will still attempt login
 
+    from urllib.parse import quote
+    login_action = f"http://localhost:8082/login/?next={quote(next, safe='/')}"
     body = (
         '<!DOCTYPE html><html><head><meta charset="UTF-8">'
         f'<style>{_RELAY_CSS}</style></head><body>'
         '<div class="sp"></div>'
         '<p style="color:#718096;font-size:.85rem">Signing in to Airflow…</p>'
-        '<form id="f" action="http://localhost:8082/login/" method="POST" style="display:none">'
+        f'<form id="f" action="{login_action}" method="POST" style="display:none">'
         f'<input name="csrf_token" value="{csrf_token}">'
         f'<input name="username"   value="{AIRFLOW_USER}">'
         f'<input name="password"   value="{AIRFLOW_PASS}">'
@@ -403,8 +405,6 @@ def tool_airflow() -> HTMLResponse:
     )
     resp = HTMLResponse(body)
     if session_val:
-        # Forward Airflow's session cookie — the browser will send it to
-        # localhost:8080 (same host, different port) when the form submits.
         resp.set_cookie("session", session_val, httponly=True, samesite="lax", path="/")
     return resp
 
@@ -574,6 +574,7 @@ select.form-control{cursor:pointer}
 .guide-node.n2{border-color:#276749}.guide-node.n2 .guide-node-title{color:#68d391}
 .guide-node.n3{border-color:#744210}.guide-node.n3 .guide-node-title{color:#f6ad55}
 .guide-node.n4{border-color:#553c9a}.guide-node.n4 .guide-node-title{color:#b794f4}
+.guide-node.n5{border-color:#276749}.guide-node.n5 .guide-node-title{color:#68d391}
 .guide-arrow{display:flex;flex-direction:column;align-items:center;justify-content:center;width:48px;flex-shrink:0;padding-top:54px}
 .guide-arrow-line{width:100%;height:2px;background:linear-gradient(90deg,#2d3748,#4a5568)}
 .guide-arrow-head{width:0;height:0;border-top:5px solid transparent;border-bottom:5px solid transparent;border-left:7px solid #4a5568;margin-left:-1px}
@@ -751,10 +752,28 @@ select.form-control{cursor:pointer}
           <div class="guide-node-num">Step 4</div>
           <div class="guide-node-icon">🐘</div>
           <div class="guide-node-title">Postgres</div>
-          <div class="guide-node-desc">Cleaned data lands in <code style="font-size:.65rem;background:#1e2535;padding:1px 4px;border-radius:3px">clean.</code> schema; aggregations in <code style="font-size:.65rem;background:#1e2535;padding:1px 4px;border-radius:3px">analytics.</code></div>
+          <div class="guide-node-desc">Cleaned data lands as a view in <code style="font-size:.65rem;background:#1e2535;padding:1px 4px;border-radius:3px">clean.</code> schema for querying</div>
           <div class="guide-node-tags">
             <span class="guide-tag">clean schema</span>
-            <span class="guide-tag">analytics schema</span>
+            <span class="guide-tag">view</span>
+          </div>
+        </div>
+
+        <div class="guide-arrow">
+          <div class="guide-arrow-line"></div>
+          <div class="guide-arrow-head"></div>
+          <div class="guide-arrow-label">exports CSV</div>
+        </div>
+
+        <!-- Step 5: MinIO Clean -->
+        <div class="guide-node n5">
+          <div class="guide-node-num">Step 5</div>
+          <div class="guide-node-icon">🗄️</div>
+          <div class="guide-node-title">MinIO Clean</div>
+          <div class="guide-node-desc">Transformed CSV snapshot written to <code style="font-size:.65rem;background:#1e2535;padding:1px 4px;border-radius:3px">datafabrik-clean</code> bucket</div>
+          <div class="guide-node-tags">
+            <span class="guide-tag">datafabrik-clean</span>
+            <span class="guide-tag">wizard/</span>
           </div>
         </div>
 
@@ -783,6 +802,18 @@ function nav(id) {
     iframeLoaded[id] = true;
   }
   if (id === 'home') loadHome();
+}
+
+function openAirflowDag(dagId) {
+  const dagPath = '/dags/' + dagId + '/grid';
+  if (iframeLoaded['airflow']) {
+    nav('airflow');
+    document.getElementById('frame-airflow').src = 'http://localhost:8082' + dagPath;
+  } else {
+    document.getElementById('frame-airflow').src = '/tools/airflow?next=' + dagPath;
+    iframeLoaded['airflow'] = true;
+    nav('airflow');
+  }
 }
 
 // ── Toast ───────────────────────────────────────────────────────────────
@@ -948,7 +979,7 @@ function renderPipelines(pipes) {
     const isPaused = p.state === 'paused';
     const isRunning = p.state === 'running';
     return `<tr id="pipe-row-${p.id}">
-      <td><strong>${p.id}</strong></td>
+      <td><a href="#" onclick="openAirflowDag('${p.id}');return false;" style="color:#90cdf4;text-decoration:none;font-weight:700" title="Open in Airflow">${p.id}</a></td>
       <td>${badge(p.state)}</td>
       <td class="dim">${p.last_run}</td>
       <td class="dim">${p.duration}</td>
