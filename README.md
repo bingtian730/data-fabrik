@@ -30,26 +30,13 @@ Cleaning a CSV usually means either wrestling with `pandas`/Excel by hand, or st
 
 ## Download & run
 
-**Option A — one-liner (Mac / Linux)**
-
 ```bash
 git clone https://github.com/bingtian730/data-fabrik.git
 cd data-fabrik
 ./install.sh
 ```
 
-**Option B — no Git (download ZIP)**
-
-1. Download: [⬇ data-fabrik-main.zip](https://github.com/bingtian730/data-fabrik/archive/refs/heads/main.zip)
-2. Unzip it and open a terminal inside the folder
-3. Run:
-
-```bash
-cp .env.example .env
-docker compose up -d --build
-```
-
-4. Open **http://localhost:8000** once containers are up (~3–5 min on first run)
+Open **http://localhost:8000** once containers are up (~3–5 min on first run).
 
 ## How it works
 
